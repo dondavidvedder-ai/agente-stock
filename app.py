@@ -49,7 +49,6 @@ NUMEROS_AUTORIZADOS = {
 # ── Acceso a OneDrive (enlace publico) ─────────────────────────────────────────
 
 def _share_token(url: str) -> str:
-    """Convierte la URL de compartir OneDrive al token que usa la API."""
     encoded = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
     return f"u!{encoded}"
 
@@ -63,7 +62,6 @@ def _graph_get(path: str) -> dict:
 
 
 def list_week_folder(week: str) -> list:
-    """Lista los archivos de la carpeta de la semana indicada (ej. '12')."""
     try:
         data = _graph_get(f":/{week}:/children")
         return data.get("value", [])
@@ -73,14 +71,12 @@ def list_week_folder(week: str) -> list:
 
 
 def download_file(download_url: str) -> io.BytesIO:
-    """Descarga un archivo desde su URL directa de OneDrive."""
     resp = requests.get(download_url, timeout=30)
     resp.raise_for_status()
     return io.BytesIO(resp.content)
 
 
 def find_client_file(files: list, cliente: str) -> dict | None:
-    """Busca el archivo correspondiente al cliente dentro de los archivos listados."""
     cliente_lower = cliente.lower()
     for f in files:
         if cliente_lower in f["name"].lower():
@@ -89,7 +85,6 @@ def find_client_file(files: list, cliente: str) -> dict | None:
 
 
 def get_current_week() -> str:
-    """Retorna el numero de semana actual (con cero a la izquierda si < 10)."""
     w = date.today().isocalendar()[1]
     return str(w).zfill(2)
 
@@ -116,23 +111,14 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
             continue
         desc_str = str(desc) if pd.notna(desc) else ""
         if producto:
-            hay_match = (
-                producto.upper() in desc_str.upper()
-                or producto.upper() in str(modelo).upper()
-            )
+            hay_match = (producto.upper() in desc_str.upper() or producto.upper() in str(modelo).upper())
             if not hay_match:
                 continue
         try:
             stock_val = int(float(stock)) if pd.notna(stock) else 0
             trf_val   = int(float(trf))   if pd.notna(trf)   else 0
             if stock_val != 0 or trf_val != 0:
-                results.append({
-                    "modelo":      str(modelo),
-                    "descripcion": desc_str,
-                    "marca":       "MATTEL",
-                    "stock":       stock_val,
-                    "trf":         trf_val,
-                })
+                results.append({"modelo": str(modelo), "descripcion": desc_str, "marca": "MATTEL", "stock": stock_val, "trf": trf_val})
         except (ValueError, TypeError):
             pass
     return results
@@ -164,16 +150,10 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
         trf_val   = int(float(trf)) if pd.notna(trf) else 0
         if stock_val == 0 and trf_val == 0:
             continue
-        marca = str(row[marca_col]).strip() if marca_col else "MATTEL"
+        marca    = str(row[marca_col]).strip() if marca_col else "MATTEL"
         cod_col  = next((c for c in df.columns if "prov" in c.lower() and "cod" in c.lower()), None)
         desc_col = next((c for c in df.columns if "desc" in c.lower() and "prov" in c.lower()), None)
-        results.append({
-            "modelo":      str(row[cod_col]).strip()  if cod_col  else "",
-            "descripcion": str(row[desc_col]).strip() if desc_col else "",
-            "marca":       marca,
-            "stock":       stock_val,
-            "trf":         trf_val,
-        })
+        results.append({"modelo": str(row[cod_col]).strip() if cod_col else "", "descripcion": str(row[desc_col]).strip() if desc_col else "", "marca": marca, "stock": stock_val, "trf": trf_val})
     return results
 
 
@@ -183,21 +163,11 @@ def read_generic(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> l
         df = pd.read_excel(file_bytes, sheet_name=xl.sheet_names[0], header=0)
     except Exception:
         return []
-    tienda_col = next(
-        (c for c in df.columns if "tienda" in str(c).lower() or "sala" in str(c).lower()
-         or "sucursal" in str(c).lower() or "local" in str(c).lower()),
-        None,
-    )
+    tienda_col = next((c for c in df.columns if "tienda" in str(c).lower() or "sala" in str(c).lower() or "sucursal" in str(c).lower() or "local" in str(c).lower()), None)
     if tienda_col:
         df = df[df[tienda_col].str.lower().str.contains(tienda.lower(), na=False)]
-    stock_col = next(
-        (c for c in df.columns if "stock" in str(c).lower() and "disponible" in str(c).lower()),
-        next((c for c in df.columns if "stock" in str(c).lower()), None),
-    )
-    desc_col = next(
-        (c for c in df.columns if "desc" in str(c).lower() or "nombre" in str(c).lower()),
-        None,
-    )
+    stock_col = next((c for c in df.columns if "stock" in str(c).lower() and "disponible" in str(c).lower()), next((c for c in df.columns if "stock" in str(c).lower()), None))
+    desc_col  = next((c for c in df.columns if "desc" in str(c).lower() or "nombre" in str(c).lower()), None)
     results = []
     for _, row in df.iterrows():
         stock_val = int(float(row[stock_col])) if stock_col and pd.notna(row[stock_col]) else 0
@@ -209,7 +179,7 @@ def read_generic(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> l
     return results
 
 
-# ── Mapa de clientes a funciones lectoras ──────────────────────────────────────
+# ── Mapa de clientes ───────────────────────────────────────────────────────────
 
 READER_MAP = {
     "falabella": read_falabella,
@@ -219,37 +189,27 @@ READER_MAP = {
     "tottus":    read_generic,
 }
 
-
 # ── Formateo de respuesta ──────────────────────────────────────────────────────
 
 def format_whatsapp(cliente, tienda, producto, results, week) -> str:
     if not results:
         filtro = f" de *{producto}*" if producto else ""
-        return (
-            f"No encontre stock{filtro} en *{cliente.upper()} {tienda.upper()}* "
-            f"(Semana {week}).\n\nVerifica el nombre de la tienda o el producto."
-        )
-    lines = [
-        f"📦 *{cliente.upper()} — {tienda.upper()}*",
-        f"_Semana {week}_ | {len(results)} referencia(s)",
-    ]
+        return f"No encontre stock{filtro} en *{cliente.upper()} {tienda.upper()}* (Semana {week}).\n\nVerifica el nombre de la tienda o el producto."
+    lines = [f"📦 *{cliente.upper()} — {tienda.upper()}*", f"_Semana {week}_ | {len(results)} referencia(s)"]
     if producto:
         lines.append(f"🔍 _{producto}_")
     lines.append("")
     for r in results[:20]:
         emoji = "✅" if r["stock"] > 0 else "⚠️"
-        desc  = r["descripcion"][:35]
-        lines.append(f"{emoji} *{r['modelo']}* | {desc}")
+        lines.append(f"{emoji} *{r['modelo']}* | {r['descripcion'][:35]}")
         lines.append(f"   {r['marca']} | Stock: {r['stock']} | TRF: {r['trf']}")
     if len(results) > 20:
         lines.append(f"\n_...y {len(results) - 20} referencias mas_")
     return "\n".join(lines)
 
+# ── Parseo con Claude + respaldo simple ───────────────────────────────────────
 
-# ── Parseo inteligente con Claude ──────────────────────────────────────────────
-
-SYSTEM_PARSE = """
-Eres un asistente que extrae informacion de consultas de stock.
+SYSTEM_PARSE = """Eres un asistente que extrae informacion de consultas de stock.
 Del mensaje del usuario extrae:
 - cliente: uno de [Falabella, Ripley, Paris, Jumbo, Tottus]
 - tienda: nombre de la tienda o sala (ej. "Parque Arauco", "Costanera", "Vespucio")
@@ -258,19 +218,59 @@ Del mensaje del usuario extrae:
 Responde SOLO con JSON valido, sin texto adicional:
 {"cliente": "...", "tienda": "...", "producto": "..." }
 o si no puedes identificar cliente/tienda:
-{"error": "no entendi"}
-"""
+{"error": "no entendi"}"""
+
+
+def _parse_simple(msg: str) -> dict:
+    """Parseo de respaldo sin API."""
+    msg_lower = msg.lower()
+    cliente = None
+    for c in READER_MAP:
+        if c in msg_lower:
+            cliente = c.capitalize()
+            break
+    if not cliente:
+        return {"error": "no entendi"}
+    resto = msg_lower.replace(cliente.lower(), "").strip()
+    TIENDAS = [
+        "parque arauco", "alto las condes", "costanera center", "costanera",
+        "plaza vespucio", "vespucio", "florida center", "florida",
+        "plaza oeste", "plaza egana", "egana", "maipu", "maipú",
+        "quilicura", "la reina", "san bernardo", "rancagua",
+        "concepcion", "concepción", "la serena", "antofagasta",
+        "iquique", "temuco", "valdivia", "puerto montt",
+    ]
+    tienda = None
+    for t in TIENDAS:
+        if t in resto:
+            tienda = t.title()
+            resto = resto.replace(t, "").strip()
+            break
+    if not tienda:
+        palabras = resto.split()
+        if palabras:
+            tienda = " ".join(palabras[:2]).title()
+            resto = " ".join(palabras[2:])
+        else:
+            return {"error": "no entendi"}
+    producto = resto.strip() if resto.strip() else None
+    return {"cliente": cliente, "tienda": tienda, "producto": producto}
+
 
 def parse_query(msg: str) -> dict:
-    ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    resp = ac.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=150,
-        system=SYSTEM_PARSE,
-        messages=[{"role": "user", "content": msg}],
-    )
-    text = resp.content[0].text.strip()
-    return json.loads(text)
+    """Usa Claude Haiku; si falla cae a parseo simple."""
+    try:
+        ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        r  = ac.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            system=SYSTEM_PARSE,
+            messages=[{"role": "user", "content": msg}],
+        )
+        return json.loads(r.content[0].text.strip())
+    except Exception as e:
+        log.warning("Claude API fallo (%s), usando parseo simple.", e)
+        return _parse_simple(msg)
 
 
 # ── Endpoint principal WhatsApp ────────────────────────────────────────────────
@@ -293,12 +293,10 @@ def whatsapp():
 
     resp = MessagingResponse()
 
-    # Verificar numero autorizado
     if sender not in NUMEROS_AUTORIZADOS:
         log.warning("Numero no autorizado: %s", sender)
-        return str(resp)   # Silencio total — no responde nada
+        return str(resp)
 
-    # Ayuda
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
         return str(resp)
@@ -311,10 +309,7 @@ def whatsapp():
         return str(resp)
 
     if "error" in parsed:
-        resp.message(
-            "No entendi tu consulta 😅\n\n"
-            "Escribe algo como:\n_Stock Falabella Parque Arauco_\n_Mario Kart Ripley Costanera_"
-        )
+        resp.message("No entendi tu consulta 😅\n\nEscribe algo como:\n_Stock Falabella Parque Arauco_\n_Mario Kart Ripley Costanera_")
         return str(resp)
 
     cliente  = parsed.get("cliente", "").strip()
