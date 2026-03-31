@@ -509,16 +509,3 @@ def health():
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
 
-
-**Copia TODO esto, reemplaza el contenido en GitHub y haz "Commit changes"**. 
-
-Después hace exactamente lo mismo con **requirements.txt** con este contenido:
-```
-flask==3.0.3
-twilio==9.3.3
-anthropic==0.34.2
-pandas==2.2.2
-openpyxl==3.1.5
-requests==2.32.3
-gunicorn==22.0.0
-google-api-python-client>=2.0.0
