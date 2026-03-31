@@ -1,9 +1,8 @@
-
 """
 Agente WhatsApp - Consulta de Stock
 ====================================
 Servidor Flask que recibe mensajes de WhatsApp via Twilio,
-lee los archivos Excel de stock desde Google Drive y responde
+lee los archivos Excel de stock desde Dropbox y responde
 con la informacion filtrada.
 
 Autor: generado con Claude
@@ -21,7 +20,6 @@ import anthropic
 import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from googleapiclient.discovery import build
 
 # ── Configuracion ──────────────────────────────────────────────────────────────
 
@@ -30,10 +28,17 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-ANTHROPIC_API_KEY        = os.environ["ANTHROPIC_API_KEY"]
-TWILIO_AUTH_TOKEN        = os.environ["TWILIO_AUTH_TOKEN"]
-GOOGLE_DRIVE_API_KEY     = os.environ["GOOGLE_DRIVE_API_KEY"]
-GOOGLE_DRIVE_FOLDER_ID   = os.environ["GOOGLE_DRIVE_FOLDER_ID"]  # ID de la carpeta Stock en Google Drive
+ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
+TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
+
+# URLs directas de Dropbox para cada cliente
+DROPBOX_FILES = {
+    "falabella": "https://www.dropbox.com/scl/fi/nm4mpaqbv1z8zefz2et5t/Falabella.xlsx?rlkey=cupt094g92jpbh8uevc2hoirx&st=vaoqhcfa&dl=1",
+    "ripley": "https://www.dropbox.com/scl/fi/tp306bb75aym4yrlr9gch/Ripley.xlsx?rlkey=dnjioc8fcjwiapedccvg410sx&st=v2ix91tb&dl=1",
+    "walmart": "https://www.dropbox.com/scl/fi/94cobt417zg6ltgz940fl/Walmart.xlsx?rlkey=tu8ig67ktfrjlnlyk75f2dibw&st=4oj4g8kt&dl=1",
+    "jumbo": "https://www.dropbox.com/scl/fi/arcuhsmvg3xe8iqwx4llr/Jumbo.xlsx?rlkey=56y14tkk2boiuuwvlj2kexdsx&st=wm6hhrbg&dl=1",
+    "tottus": "https://www.dropbox.com/scl/fi/ldfv1i3m5dcrqiy8vfykk/Tottus.xlsx?rlkey=egn9vsr2bnrj2t69vwbu6m7sp&st=v7ydie76&dl=1",
+}
 
 # ── Lista blanca de numeros autorizados ───────────────────────────────────────
 # Solo estos numeros pueden consultar el stock. Formato: whatsapp:+56XXXXXXXXX
@@ -48,81 +53,26 @@ NUMEROS_AUTORIZADOS = {
     "whatsapp:+56990674664",
 }
 
-# ── Acceso a Google Drive ─────────────────────────────────────────────────────
+# ── Acceso a Dropbox ──────────────────────────────────────────────────────────
 
-def _get_drive_service():
-    """Retorna servicio de Google Drive API."""
-    return build("drive", "v3", developerKey=GOOGLE_DRIVE_API_KEY)
-
-
-def _find_week_folder(week: str) -> str | None:
-    """Busca la carpeta de semana (ej. '13') dentro de la carpeta principal."""
+def download_file_from_dropbox(cliente: str) -> io.BytesIO:
+    """Descarga un archivo Excel desde Dropbox usando URL directa."""
     try:
-        service = _get_drive_service()
-        log.info(f"Buscando carpeta '{week}' dentro de {GOOGLE_DRIVE_FOLDER_ID}")
+        cliente_lower = cliente.lower()
+        url = DROPBOX_FILES.get(cliente_lower)
 
-        # Listar todas las carpetas en la carpeta principal
-        query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        results = service.files().list(
-            q=query,
-            spaces="drive",
-            fields="files(id, name)",
-            pageSize=100
-        ).execute()
+        if not url:
+            log.error(f"No hay URL de Dropbox para cliente: {cliente}")
+            raise ValueError(f"Cliente '{cliente}' no disponible en Dropbox")
 
-        all_folders = results.get("files", [])
-        log.info(f"Carpetas encontradas: {[f['name'] for f in all_folders]}")
+        log.info(f"Descargando {cliente} desde Dropbox: {url[:50]}...")
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
 
-        # Buscar la carpeta por nombre
-        for folder in all_folders:
-            if folder["name"] == week:
-                log.info(f"Carpeta '{week}' encontrada con ID: {folder['id']}")
-                return folder["id"]
-
-        log.warning(f"Carpeta '{week}' no encontrada")
-        return None
+        return io.BytesIO(resp.content)
 
     except Exception as e:
-        log.error(f"Error buscando carpeta semana {week}: {type(e).__name__}: {e}")
-        import traceback
-        log.error(traceback.format_exc())
-        return None
-
-
-def list_week_folder(week: str) -> list:
-    """Lista los archivos de la carpeta de la semana indicada (ej. '12')."""
-    week_folder_id = _find_week_folder(week)
-    if not week_folder_id:
-        return []
-
-    try:
-        service = _get_drive_service()
-        query = (
-            f"'{week_folder_id}' in parents "
-            f"and mimeType != 'application/vnd.google-apps.folder' "
-            f"and trashed = false"
-        )
-        results = service.files().list(
-            q=query,
-            spaces="drive",
-            fields="files(id, name, webContentLink)",
-            pageSize=50
-        ).execute()
-        return results.get("files", [])
-    except Exception as e:
-        log.error("Error listando carpeta semana %s: %s", week, e)
-        return []
-
-
-def download_file(file_id: str) -> io.BytesIO:
-    """Descarga un archivo desde Google Drive."""
-    try:
-        service = _get_drive_service()
-        request = service.files().get_media(fileId=file_id)
-        file_content = request.execute()
-        return io.BytesIO(file_content)
-    except Exception as e:
-        log.error("Error descargando archivo %s: %s", file_id, e)
+        log.error(f"Error descargando {cliente} de Dropbox: {e}")
         raise
 
 
@@ -142,16 +92,10 @@ def get_current_week() -> str:
 
 
 def find_best_week() -> str:
-    """Busca la carpeta de semana mas reciente disponible en Google Drive (hasta 4 semanas atras)."""
-    current = date.today().isocalendar()[1]
-    for offset in range(0, 5):
-        week = str(current - offset).zfill(2)
-        try:
-            if _find_week_folder(week):
-                return week
-        except Exception:
-            continue
-    return get_current_week()  # fallback
+    """Retorna la semana actual (en Dropbox usamos siempre la semana 13 por ahora)."""
+    # En una versión mejorada, podríamos tener URLs para diferentes semanas
+    # Por ahora, asumimos que siempre están actualizados en la semana actual
+    return get_current_week()
 
 
 # ── Lectura de archivos por cliente ────────────────────────────────────────────
@@ -493,20 +437,9 @@ def whatsapp():
         resp.message(f"Cliente '{cliente}' no reconocido.\n\nDisponibles: {', '.join(READER_MAP)}")
         return str(resp)
 
-    # Buscar archivo en Google Drive
-    files = list_week_folder(week)
-    if not files:
-        resp.message(f"No encontre archivos para la semana {week} en Google Drive.")
-        return str(resp)
-
-    client_file = find_client_file(files, cliente)
-    if not client_file:
-        resp.message(f"No hay archivo de {cliente} para la semana {week}.")
-        return str(resp)
-
-    # Descargar y leer
+    # Descargar archivo de Dropbox
     try:
-        file_bytes = download_file(client_file["id"])
+        file_bytes = download_file_from_dropbox(cliente)
         results    = reader_fn(file_bytes, tienda, producto)
     except Exception as e:
         log.error("Error leyendo archivo: %s", e)
