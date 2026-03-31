@@ -133,12 +133,13 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
             log.warning(f"Falabella: Columnas faltantes")
             return []
 
-        # Filtrar por tienda
-        mask = df[tienda_col].str.lower().str.contains(tienda.lower(), na=False)
+        # Filtrar por tienda (búsqueda flexible: case-insensitive, parcial)
+        tienda_lower = tienda.lower().strip()
+        mask = df[tienda_col].astype(str).str.lower().str.contains(tienda_lower, na=False, regex=False)
         filtered = df[mask]
 
         if len(filtered) == 0:
-            log.info(f"Falabella: No hay tiendas que coincidan con '{tienda}'")
+            log.info(f"Falabella: No hay tiendas que coincidan con '{tienda}'. Disponibles: {df[tienda_col].unique()[:5]}")
             return []
 
         results = []
@@ -187,11 +188,13 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
             log.warning("Ripley: No se encontró columna Sucursal")
             return []
 
-        mask = df[sucursal_col].str.lower().str.contains(tienda.lower(), na=False)
+        # Búsqueda flexible: case-insensitive, parcial
+        tienda_lower = tienda.lower().strip()
+        mask = df[sucursal_col].astype(str).str.lower().str.contains(tienda_lower, na=False, regex=False)
         filtered = df[mask]
 
         if len(filtered) == 0:
-            log.info(f"Ripley: No hay sucursales que coincidan con '{tienda}'")
+            log.info(f"Ripley: No hay sucursales que coincidan con '{tienda}'. Disponibles: {df[sucursal_col].unique()[:5]}")
             return []
 
         results = []
@@ -448,4 +451,19 @@ def whatsapp():
         file_bytes = download_file_from_dropbox(cliente)
         results    = reader_fn(file_bytes, tienda, producto)
     except Exception as e:
-        log.erro
+        log.error("Error leyendo archivo: %s", e)
+        resp.message("Ocurrio un error leyendo el archivo ⚠️. Intentalo de nuevo.")
+        return str(resp)
+
+    msg = format_whatsapp(cliente, tienda, producto, results, week)
+    resp.message(msg)
+    return str(resp)
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok", "week": get_current_week()}, 200
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
