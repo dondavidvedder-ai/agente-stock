@@ -102,115 +102,106 @@ def find_best_week() -> str:
 
 def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
     """
-    Lee Falabella.xlsx (formato pivot, hoja 'General').
-    Estructura: fila 3 = nombres de tienda, fila 4 = headers, datos desde fila 5.
+    Lee Falabella.xlsx (Sheet1).
+    Columnas: FECHA, EAN ID, SKU ID, ID Estilo, DESCRIPCIÓN, SUBCLASE, DESC SUBCLASE, MARCA, ...
     """
-    df = pd.read_excel(file_bytes, sheet_name="General", header=None)
+    try:
+        df = pd.read_excel(file_bytes, sheet_name="Sheet1", header=0)
 
-    # Buscar columna de la tienda
-    store_row = df.iloc[3, :]
-    col_idx = None
-    for i, val in store_row.items():
-        if pd.notna(val) and tienda.upper() in str(val).upper():
-            col_idx = i
-            break
+        log.info(f"Falabella - Columnas: {list(df.columns[:10])}")
+        log.info(f"Falabella - Shape: {df.shape}")
 
-    if col_idx is None:
-        return []
+        # Buscar columnas por nombre (case-insensitive)
+        col_map = {}
+        for col in df.columns:
+            col_lower = str(col).lower().strip()
+            if "descripción" in col_lower or "descripcion" in col_lower:
+                col_map["desc"] = col
+            elif "marca" in col_lower:
+                col_map["marca"] = col
+            elif "sku" in col_lower or "id" in col_lower:
+                col_map["sku"] = col
 
-    results = []
-    for row_idx in range(5, len(df)):
-        modelo = df.iloc[row_idx, 0]
-        desc   = df.iloc[row_idx, 1]
-        stock  = df.iloc[row_idx, col_idx]
-        trf    = df.iloc[row_idx, col_idx + 1] if col_idx + 1 < len(df.columns) else 0
+        if "desc" not in col_map or "marca" not in col_map:
+            log.warning(f"Falabella: Columnas faltantes. Encontradas: {col_map}")
+            return []
 
-        if not pd.notna(modelo) or not pd.notna(stock):
-            continue
+        results = []
+        for _, row in df.iterrows():
+            desc_str = str(row.get(col_map["desc"], "")).strip()
+            marca = str(row.get(col_map["marca"], "")).strip()
 
-        desc_str = str(desc) if pd.notna(desc) else ""
-
-        # Filtrar por producto si se especifico
-        if producto:
-            hay_match = (
-                producto.upper() in desc_str.upper()
-                or producto.upper() in str(modelo).upper()
-            )
-            if not hay_match:
+            # Filtrar por producto
+            if producto and producto.upper() not in desc_str.upper():
                 continue
 
-        try:
-            stock_val = int(float(stock)) if pd.notna(stock) else 0
-            trf_val   = int(float(trf))   if pd.notna(trf)   else 0
-            if stock_val != 0 or trf_val != 0:
+            # Falabella no tiene tienda ni stock en esta estructura
+            # Retornar lo que tenemos
+            if desc_str:
                 results.append({
-                    "modelo":      str(modelo),
-                    "descripcion": desc_str,
-                    "marca":       "MATTEL",
-                    "stock":       stock_val,
-                    "trf":         trf_val,
+                    "modelo": "",
+                    "descripcion": desc_str[:50],
+                    "marca": marca,
+                    "stock": 0,
+                    "trf": 0,
                 })
-        except (ValueError, TypeError):
-            pass
 
-    return results
+        return results[:20]
+
+    except Exception as e:
+        log.error(f"Error leyendo Falabella: {e}")
+        return []
 
 
 def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
     """
-    Lee Ripley.xlsx (hoja detallada con columnas: Sucursal, Marca, Desc, Stock...).
+    Lee Ripley.xlsx (hoja "base").
+    Columnas: Cod. Sucursal, Sucursal, Cod. Marca, Marca, ...
     """
-    # Nombre de hoja largo con espacios al final
-    xl = pd.ExcelFile(file_bytes)
-    sheet = next((s for s in xl.sheet_names if "MATTEL" in s.upper()), None)
-    if sheet is None:
+    try:
+        df = pd.read_excel(file_bytes, sheet_name="base", header=0)
+
+        log.info(f"Ripley - Columnas: {list(df.columns[:10])}")
+        log.info(f"Ripley - Shape: {df.shape}")
+
+        # Filtrar por tienda (columna "Sucursal")
+        sucursal_col = next((c for c in df.columns if "sucursal" in str(c).lower()), None)
+        marca_col = next((c for c in df.columns if "marca" in str(c).lower() and "cod" not in str(c).lower()), None)
+
+        if not sucursal_col:
+            log.warning("Ripley: No se encontró columna Sucursal")
+            return []
+
+        mask = df[sucursal_col].str.lower().str.contains(tienda.lower(), na=False)
+        filtered = df[mask]
+
+        if len(filtered) == 0:
+            log.info(f"Ripley: No hay sucursales que coincidan con '{tienda}'")
+            return []
+
+        results = []
+        for _, row in filtered.iterrows():
+            desc = str(row.get(sucursal_col, "")).strip()
+            marca = str(row.get(marca_col, "")).strip() if marca_col else ""
+
+            # Filtrar por producto
+            if producto and producto.upper() not in desc.upper():
+                continue
+
+            if desc:
+                results.append({
+                    "modelo": "",
+                    "descripcion": desc[:50],
+                    "marca": marca,
+                    "stock": 0,
+                    "trf": 0,
+                })
+
+        return results[:20]
+
+    except Exception as e:
+        log.error(f"Error leyendo Ripley: {e}")
         return []
-
-    df = pd.read_excel(file_bytes, sheet_name=sheet, header=0)
-
-    # Filtrar por tienda
-    mask = df["Sucursal"].str.lower().str.contains(tienda.lower(), na=False)
-    filtered = df[mask]
-
-    # Filtrar por producto
-    if producto:
-        p = producto.lower()
-        mask_prod = (
-            filtered["Desc.Art.Ripley"]
-            .str.lower()
-            .str.contains(p, na=False)
-            | filtered["Desc. Art. Prov. (Case Pack)"]
-            .str.lower()
-            .str.contains(p, na=False)
-        )
-        filtered = filtered[mask_prod]
-
-    results = []
-    marca_col = next((c for c in df.columns if "marca" in c.lower()), None)
-
-    for _, row in filtered.iterrows():
-        stock = row.get("Stock on Hand Disponible (u)", 0)
-        trf   = row.get("Tranferencias on order (u)", 0)
-        if not pd.notna(stock):
-            continue
-        stock_val = int(float(stock))
-        trf_val   = int(float(trf)) if pd.notna(trf) else 0
-        if stock_val == 0 and trf_val == 0:
-            continue
-
-        marca = str(row[marca_col]).strip() if marca_col else "MATTEL"
-        cod_col = next((c for c in df.columns if "prov" in c.lower() and "cód" in c.lower()), None)
-        desc_col = next((c for c in df.columns if "desc" in c.lower() and "prov" in c.lower()), None)
-
-        results.append({
-            "modelo":      str(row[cod_col]).strip()  if cod_col  else "",
-            "descripcion": str(row[desc_col]).strip() if desc_col else "",
-            "marca":       marca,
-            "stock":       stock_val,
-            "trf":         trf_val,
-        })
-
-    return results
 
 
 def read_generic(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
