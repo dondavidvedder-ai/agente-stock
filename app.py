@@ -2,7 +2,7 @@
 Agente WhatsApp - Consulta de Stock
 ====================================
 Servidor Flask que recibe mensajes de WhatsApp via Twilio,
-lee los archivos Excel de stock desde OneDrive y responde
+lee los archivos Excel de stock desde Google Drive y responde
 con la informacion filtrada.
 
 Autor: generado con Claude
@@ -11,7 +11,6 @@ Autor: generado con Claude
 import os
 import re
 import json
-import base64
 import io
 import logging
 from datetime import date
@@ -21,19 +20,21 @@ import anthropic
 import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from googleapiclient.discovery import build
 
-# ââ Configuracion ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Configuracion ──────────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
-TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
-ONEDRIVE_SHARE_URL = os.environ["ONEDRIVE_SHARE_URL"]   # URL publica de la carpeta Stock en OneDrive
+ANTHROPIC_API_KEY        = os.environ["ANTHROPIC_API_KEY"]
+TWILIO_AUTH_TOKEN        = os.environ["TWILIO_AUTH_TOKEN"]
+GOOGLE_DRIVE_API_KEY     = os.environ["GOOGLE_DRIVE_API_KEY"]
+GOOGLE_DRIVE_FOLDER_ID   = os.environ["GOOGLE_DRIVE_FOLDER_ID"]  # ID de la carpeta Stock en Google Drive
 
-# ââ Lista blanca de numeros autorizados âââââââââââââââââââââââââââââââââââââââ
+# ── Lista blanca de numeros autorizados ───────────────────────────────────────
 # Solo estos numeros pueden consultar el stock. Formato: whatsapp:+56XXXXXXXXX
 
 NUMEROS_AUTORIZADOS = {
@@ -46,37 +47,66 @@ NUMEROS_AUTORIZADOS = {
     "whatsapp:+56990674664",
 }
 
-# ââ Acceso a OneDrive (enlace publico) âââââââââââââââââââââââââââââââââââââââââ
+# ── Acceso a Google Drive ─────────────────────────────────────────────────────
 
-def _share_token(url: str) -> str:
-    """Convierte la URL de compartir OneDrive al token que usa la API."""
-    encoded = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
-    return f"u!{encoded}"
+def _get_drive_service():
+    """Retorna servicio de Google Drive API."""
+    return build("drive", "v3", developerKey=GOOGLE_DRIVE_API_KEY)
 
 
-def _graph_get(path: str) -> dict:
-    token = _share_token(ONEDRIVE_SHARE_URL)
-    full_url = f"https://graph.microsoft.com/v1.0/shares/{token}/root{path}"
-    resp = requests.get(full_url, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+def _find_week_folder(week: str) -> str | None:
+    """Busca la carpeta de semana (ej. '13') dentro de la carpeta principal."""
+    try:
+        service = _get_drive_service()
+        query = (
+            f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents "
+            f"and name = '{week}' "
+            f"and mimeType = 'application/vnd.google-apps.folder' "
+            f"and trashed = false"
+        )
+        results = service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception as e:
+        log.error("Error buscando carpeta semana %s: %s", week, e)
+        return None
 
 
 def list_week_folder(week: str) -> list:
     """Lista los archivos de la carpeta de la semana indicada (ej. '12')."""
+    week_folder_id = _find_week_folder(week)
+    if not week_folder_id:
+        return []
+
     try:
-        data = _graph_get(f":/{week}:/children")
-        return data.get("value", [])
+        service = _get_drive_service()
+        query = (
+            f"'{week_folder_id}' in parents "
+            f"and mimeType != 'application/vnd.google-apps.folder' "
+            f"and trashed = false"
+        )
+        results = service.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id, name, webContentLink)",
+            pageSize=50
+        ).execute()
+        return results.get("files", [])
     except Exception as e:
         log.error("Error listando carpeta semana %s: %s", week, e)
         return []
 
 
-def download_file(download_url: str) -> io.BytesIO:
-    """Descarga un archivo desde su URL directa de OneDrive."""
-    resp = requests.get(download_url, timeout=30)
-    resp.raise_for_status()
-    return io.BytesIO(resp.content)
+def download_file(file_id: str) -> io.BytesIO:
+    """Descarga un archivo desde Google Drive."""
+    try:
+        service = _get_drive_service()
+        request = service.files().get_media(fileId=file_id)
+        file_content = request.execute()
+        return io.BytesIO(file_content)
+    except Exception as e:
+        log.error("Error descargando archivo %s: %s", file_id, e)
+        raise
 
 
 def find_client_file(files: list, cliente: str) -> dict | None:
@@ -95,20 +125,19 @@ def get_current_week() -> str:
 
 
 def find_best_week() -> str:
-    """Busca la carpeta de semana mas reciente disponible en OneDrive (hasta 4 semanas atras)."""
+    """Busca la carpeta de semana mas reciente disponible en Google Drive (hasta 4 semanas atras)."""
     current = date.today().isocalendar()[1]
     for offset in range(0, 5):
         week = str(current - offset).zfill(2)
         try:
-            data = _graph_get(f":/{week}:/children")
-            if data.get("value"):
+            if _find_week_folder(week):
                 return week
         except Exception:
             continue
     return get_current_week()  # fallback
 
 
-# ââ Lectura de archivos por cliente ââââââââââââââââââââââââââââââââââââââââââââ
+# ── Lectura de archivos por cliente ────────────────────────────────────────────
 
 def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
     """
@@ -209,7 +238,7 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
             continue
 
         marca = str(row[marca_col]).strip() if marca_col else "MATTEL"
-        cod_col = next((c for c in df.columns if "prov" in c.lower() and "cÃ³d" in c.lower()), None)
+        cod_col = next((c for c in df.columns if "prov" in c.lower() and "cód" in c.lower()), None)
         desc_col = next((c for c in df.columns if "desc" in c.lower() and "prov" in c.lower()), None)
 
         results.append({
@@ -272,7 +301,7 @@ def read_generic(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> l
     return results
 
 
-# ââ Mapa de clientes a funciones lectoras ââââââââââââââââââââââââââââââââââââââ
+# ── Mapa de clientes a funciones lectoras ──────────────────────────────────────
 
 READER_MAP = {
     "falabella": read_falabella,
@@ -283,7 +312,7 @@ READER_MAP = {
 }
 
 
-# ââ Formateo de respuesta ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Formateo de respuesta ──────────────────────────────────────────────────────
 
 def format_whatsapp(cliente, tienda, producto, results, week) -> str:
     if not results:
@@ -294,15 +323,15 @@ def format_whatsapp(cliente, tienda, producto, results, week) -> str:
         )
 
     lines = [
-        f"ð¦ *{cliente.upper()} â {tienda.upper()}*",
+        f"📦 *{cliente.upper()} — {tienda.upper()}*",
         f"_Semana {week}_ | {len(results)} referencia(s)",
     ]
     if producto:
-        lines.append(f"ð _{producto}_")
+        lines.append(f"🔍 _{producto}_")
     lines.append("")
 
     for r in results[:20]:
-        emoji = "â" if r["stock"] > 0 else "â ï¸"
+        emoji = "✅" if r["stock"] > 0 else "⚠️"
         desc  = r["descripcion"][:35]
         lines.append(f"{emoji} *{r['modelo']}* | {desc}")
         lines.append(f"   {r['marca']} | Stock: {r['stock']} | TRF: {r['trf']}")
@@ -313,7 +342,7 @@ def format_whatsapp(cliente, tienda, producto, results, week) -> str:
     return "\n".join(lines)
 
 
-# ââ Parseo inteligente con Claude ââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Parseo inteligente con Claude ──────────────────────────────────────────────
 
 SYSTEM_PARSE = """
 Eres un asistente que extrae informacion de consultas de stock.
@@ -349,9 +378,9 @@ def _parse_simple(msg: str) -> dict:
     TIENDAS = [
         "parque arauco", "alto las condes", "costanera center", "costanera",
         "vespucio", "plaza vespucio", "florida center", "florida",
-        "plaza oeste", "plaza egana", "egana", "maipu", "maipÃº",
+        "plaza oeste", "plaza egana", "egana", "maipu", "maipú",
         "quilicura", "la reina", "san bernardo", "rancagua",
-        "concepcion", "concepciÃ³n", "la serena", "antofagasta",
+        "concepcion", "concepción", "la serena", "antofagasta",
         "iquique", "temuco", "valdivia", "puerto montt",
     ]
     tienda = None
@@ -361,7 +390,7 @@ def _parse_simple(msg: str) -> dict:
             resto = resto.replace(t, "").strip()
             break
 
-    # Si no se encontrÃ³ tienda conocida, tomar las primeras palabras restantes
+    # Si no se encontró tienda conocida, tomar las primeras palabras restantes
     if not tienda:
         palabras = resto.split()
         if palabras:
@@ -392,14 +421,14 @@ def parse_query(msg: str) -> dict:
         return _parse_simple(msg)
 
 
-# ââ Endpoint principal WhatsApp ââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Endpoint principal WhatsApp ────────────────────────────────────────────────
 
 HELP_MSG = (
-    "Hola! Soy el asistente de stock ð¦\n\n"
+    "Hola! Soy el asistente de stock 📦\n\n"
     "Ejemplos de consulta:\n"
-    "â¢ _Stock Falabella Parque Arauco_\n"
-    "â¢ _Mario Kart en Ripley Costanera_\n"
-    "â¢ _Jumbo Maipu_\n\n"
+    "• _Stock Falabella Parque Arauco_\n"
+    "• _Mario Kart en Ripley Costanera_\n"
+    "• _Jumbo Maipu_\n\n"
     "Clientes disponibles: Falabella, Ripley, Paris, Jumbo, Tottus"
 )
 
@@ -415,7 +444,7 @@ def whatsapp():
     # Verificar numero autorizado
     if sender not in NUMEROS_AUTORIZADOS:
         log.warning("Numero no autorizado: %s", sender)
-        return str(resp)   # Silencio total â no responde nada
+        return str(resp)   # Silencio total — no responde nada
 
     # Ayuda
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
@@ -431,7 +460,7 @@ def whatsapp():
 
     if "error" in parsed:
         resp.message(
-            "No entendi tu consulta ð\n\n"
+            "No entendi tu consulta 😅\n\n"
             "Escribe algo como:\n_Stock Falabella Parque Arauco_\n_Mario Kart Ripley Costanera_"
         )
         return str(resp)
@@ -447,10 +476,10 @@ def whatsapp():
         resp.message(f"Cliente '{cliente}' no reconocido.\n\nDisponibles: {', '.join(READER_MAP)}")
         return str(resp)
 
-    # Buscar archivo en OneDrive
+    # Buscar archivo en Google Drive
     files = list_week_folder(week)
     if not files:
-        resp.message(f"No encontre archivos para la semana {week} en OneDrive.")
+        resp.message(f"No encontre archivos para la semana {week} en Google Drive.")
         return str(resp)
 
     client_file = find_client_file(files, cliente)
@@ -460,11 +489,11 @@ def whatsapp():
 
     # Descargar y leer
     try:
-        file_bytes = download_file(client_file["@microsoft.graph.downloadUrl"])
+        file_bytes = download_file(client_file["id"])
         results    = reader_fn(file_bytes, tienda, producto)
     except Exception as e:
         log.error("Error leyendo archivo: %s", e)
-        resp.message("Ocurrio un error leyendo el archivo â ï¸. Intentalo de nuevo.")
+        resp.message("Ocurrio un error leyendo el archivo ⚠️. Intentalo de nuevo.")
         return str(resp)
 
     msg = format_whatsapp(cliente, tienda, producto, results, week)
@@ -474,8 +503,22 @@ def whatsapp():
 
 @app.route("/health")
 def health():
-    return {"status": "ok", "week": get_current_week(), "best_week": find_best_week()}, 200
+    return {"status": "ok", "week": get_current_week()}, 200
 
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+```
+
+**Copia TODO esto, reemplaza el contenido en GitHub y haz "Commit changes"**. 
+
+Después hace exactamente lo mismo con **requirements.txt** con este contenido:
+```
+flask==3.0.3
+twilio==9.3.3
+anthropic==0.34.2
+pandas==2.2.2
+openpyxl==3.1.5
+requests==2.32.3
+gunicorn==22.0.0
+google-api-python-client>=2.0.0
