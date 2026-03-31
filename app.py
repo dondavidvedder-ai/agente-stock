@@ -103,40 +103,53 @@ def find_best_week() -> str:
 def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
     """
     Lee Falabella.xlsx (Sheet1).
-    Columnas: FECHA, EAN ID, SKU ID, ID Estilo, DESCRIPCIÓN, SUBCLASE, DESC SUBCLASE, MARCA, ...
+    Columnas: FECHA, EAN ID, SKU ID, ID Estilo, DESCRIPCIÓN, SUBCLASE, DESC SUBCLASE, MARCA, ..., M=Tienda
     """
     try:
         df = pd.read_excel(file_bytes, sheet_name="Sheet1", header=0)
 
-        log.info(f"Falabella - Columnas: {list(df.columns[:10])}")
+        log.info(f"Falabella - Columnas: {list(df.columns[:15])}")
         log.info(f"Falabella - Shape: {df.shape}")
 
-        # Buscar columnas por nombre (case-insensitive)
-        col_map = {}
+        # Encontrar columnas relevantes
+        desc_col = None
+        marca_col = None
+        tienda_col = None
+
         for col in df.columns:
             col_lower = str(col).lower().strip()
             if "descripción" in col_lower or "descripcion" in col_lower:
-                col_map["desc"] = col
+                desc_col = col
             elif "marca" in col_lower:
-                col_map["marca"] = col
-            elif "sku" in col_lower or "id" in col_lower:
-                col_map["sku"] = col
+                marca_col = col
 
-        if "desc" not in col_map or "marca" not in col_map:
-            log.warning(f"Falabella: Columnas faltantes. Encontradas: {col_map}")
+        # Columna M debería ser tienda (13ava columna, índice 12)
+        if len(df.columns) > 12:
+            tienda_col = df.columns[12]  # Columna M (índice 12)
+
+        log.info(f"Falabella - Columnas detectadas: desc={desc_col}, marca={marca_col}, tienda={tienda_col}")
+
+        if not desc_col or not marca_col or not tienda_col:
+            log.warning(f"Falabella: Columnas faltantes")
+            return []
+
+        # Filtrar por tienda
+        mask = df[tienda_col].str.lower().str.contains(tienda.lower(), na=False)
+        filtered = df[mask]
+
+        if len(filtered) == 0:
+            log.info(f"Falabella: No hay tiendas que coincidan con '{tienda}'")
             return []
 
         results = []
-        for _, row in df.iterrows():
-            desc_str = str(row.get(col_map["desc"], "")).strip()
-            marca = str(row.get(col_map["marca"], "")).strip()
+        for _, row in filtered.iterrows():
+            desc_str = str(row.get(desc_col, "")).strip()
+            marca = str(row.get(marca_col, "")).strip()
 
             # Filtrar por producto
             if producto and producto.upper() not in desc_str.upper():
                 continue
 
-            # Falabella no tiene tienda ni stock en esta estructura
-            # Retornar lo que tenemos
             if desc_str:
                 results.append({
                     "modelo": "",
@@ -150,6 +163,8 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
 
     except Exception as e:
         log.error(f"Error leyendo Falabella: {e}")
+        import traceback
+        log.error(traceback.format_exc())
         return []
 
 
@@ -433,19 +448,4 @@ def whatsapp():
         file_bytes = download_file_from_dropbox(cliente)
         results    = reader_fn(file_bytes, tienda, producto)
     except Exception as e:
-        log.error("Error leyendo archivo: %s", e)
-        resp.message("Ocurrio un error leyendo el archivo ⚠️. Intentalo de nuevo.")
-        return str(resp)
-
-    msg = format_whatsapp(cliente, tienda, producto, results, week)
-    resp.message(msg)
-    return str(resp)
-
-
-@app.route("/health")
-def health():
-    return {"status": "ok", "week": get_current_week()}, 200
-
-
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+        log.erro
