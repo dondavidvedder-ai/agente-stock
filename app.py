@@ -1,3 +1,4 @@
+
 """
 Agente WhatsApp - Consulta de Stock
 ====================================
@@ -58,17 +59,33 @@ def _find_week_folder(week: str) -> str | None:
     """Busca la carpeta de semana (ej. '13') dentro de la carpeta principal."""
     try:
         service = _get_drive_service()
-        query = (
-            f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents "
-            f"and name = '{week}' "
-            f"and mimeType = 'application/vnd.google-apps.folder' "
-            f"and trashed = false"
-        )
-        results = service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
-        files = results.get("files", [])
-        return files[0]["id"] if files else None
+        log.info(f"Buscando carpeta '{week}' dentro de {GOOGLE_DRIVE_FOLDER_ID}")
+
+        # Listar todas las carpetas en la carpeta principal
+        query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        results = service.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id, name)",
+            pageSize=100
+        ).execute()
+
+        all_folders = results.get("files", [])
+        log.info(f"Carpetas encontradas: {[f['name'] for f in all_folders]}")
+
+        # Buscar la carpeta por nombre
+        for folder in all_folders:
+            if folder["name"] == week:
+                log.info(f"Carpeta '{week}' encontrada con ID: {folder['id']}")
+                return folder["id"]
+
+        log.warning(f"Carpeta '{week}' no encontrada")
+        return None
+
     except Exception as e:
-        log.error("Error buscando carpeta semana %s: %s", week, e)
+        log.error(f"Error buscando carpeta semana {week}: {type(e).__name__}: {e}")
+        import traceback
+        log.error(traceback.format_exc())
         return None
 
 
@@ -508,4 +525,3 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
