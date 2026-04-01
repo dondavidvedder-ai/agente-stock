@@ -74,7 +74,13 @@ def consultar_stock(cliente, tienda, producto):
             "marca":       str(row.get("Marca", "")),
             "stock":       stock,
         })
-    return results[:25]
+        # Si hay producto específico: mostrar TODOS los resultados
+    if producto:
+                return results
+
+    # Si NO hay producto: ordenar por stock descendente y devolver TOP 50
+    results.sort(key=lambda x: x["stock"], reverse=True)
+    return results[:50]
 
 def format_respuesta(cliente, tienda, producto, results):
     semana = str(date.today().isocalendar()[1]).zfill(2)
