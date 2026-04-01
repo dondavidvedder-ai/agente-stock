@@ -175,7 +175,7 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
     Columnas: Cod. Sucursal, Sucursal, Cod. Marca, Marca, ...
     """
     try:
-        df = pd.read_excel(file_bytes, sheet_name="base", header=0)
+        df = pd.read_excel(file_bytes, sheet_name="BASE", header=0)
 
         log.info(f"Ripley - Columnas: {list(df.columns[:10])}")
         log.info(f"Ripley - Shape: {df.shape}")
