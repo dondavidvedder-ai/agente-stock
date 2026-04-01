@@ -483,4 +483,4 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-Fix: Búsqueda flexible palabra-por-palabra para tiendas
+
