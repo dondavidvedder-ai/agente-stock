@@ -133,9 +133,16 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
             log.warning(f"Falabella: Columnas faltantes")
             return []
 
-        # Filtrar por tienda (búsqueda flexible: case-insensitive, parcial)
+        # Búsqueda flexible: buscar por CUALQUIER palabra en la tienda
         tienda_lower = tienda.lower().strip()
-        mask = df[tienda_col].astype(str).str.lower().str.contains(tienda_lower, na=False, regex=False)
+        tienda_words = tienda_lower.split()
+
+        mask = pd.Series([False] * len(df))
+        for word in tienda_words:
+            if len(word) > 2:
+                word_mask = df[tienda_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
+                mask = mask | word_mask
+
         filtered = df[mask]
 
         if len(filtered) == 0:
@@ -171,7 +178,7 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
 
 def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
     """
-    Lee Ripley.xlsx (hoja "base").
+    Lee Ripley.xlsx (hoja "Base").
     Columnas: Cod. Sucursal, Sucursal, Cod. Marca, Marca, ...
     """
     try:
@@ -188,9 +195,18 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
             log.warning("Ripley: No se encontró columna Sucursal")
             return []
 
-        # Búsqueda flexible: case-insensitive, parcial
+        # Búsqueda flexible: buscar por CUALQUIER palabra en la tienda
         tienda_lower = tienda.lower().strip()
-        mask = df[sucursal_col].astype(str).str.lower().str.contains(tienda_lower, na=False, regex=False)
+        tienda_words = tienda_lower.split()
+
+        # Si el usuario dice "Los Dominicos", buscar por "dominicos"
+        # Si dice "Parque Arauco", buscar por "arauco" o "parque"
+        mask = pd.Series([False] * len(df))
+        for word in tienda_words:
+            if len(word) > 2:  # Ignorar palabras muy cortas
+                word_mask = df[sucursal_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
+                mask = mask | word_mask
+
         filtered = df[mask]
 
         if len(filtered) == 0:
