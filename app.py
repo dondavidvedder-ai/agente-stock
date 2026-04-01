@@ -21,8 +21,6 @@ import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 
-# -- Configuracion --
-
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -31,7 +29,6 @@ app = Flask(__name__)
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
 
-# URLs directas de Dropbox para cada cliente
 DROPBOX_FILES = {
     "falabella": "https://www.dropbox.com/scl/fi/nm4mpaqbv1z8zefz2et5t/Falabella.xlsx?rlkey=cupt094g92jpbh8uevc2hoirx&st=vaoqhcfa&dl=1",
     "ripley": "https://www.dropbox.com/scl/fi/tp306bb75aym4yrlr9gch/Ripley.xlsx?rlkey=dnjioc8fcjwiapedccvg410sx&st=v2ix91tb&dl=1",
@@ -50,58 +47,52 @@ NUMEROS_AUTORIZADOS = {
     "whatsapp:+56990674664",
 }
 
-def download_file_from_dropbox(cliente: str) -> io.BytesIO:
+def download_file_from_dropbox(cliente):
     try:
-        cliente_lower = cliente.lower()
-        url = DROPBOX_FILES.get(cliente_lower)
+        url = DROPBOX_FILES.get(cliente.lower())
         if not url:
-            log.error(f"No hay URL de Dropbox para cliente: {cliente}")
-            raise ValueError(f"Cliente '{cliente}' no disponible en Dropbox")
-        log.info(f"Descargando {cliente} desde Dropbox: {url[:50]}...")
+            raise ValueError(f"Cliente '{cliente}' no disponible")
+        log.info(f"Descargando {cliente} desde Dropbox...")
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         return io.BytesIO(resp.content)
     except Exception as e:
-        log.error(f"Error descargando {cliente} de Dropbox: {e}")
+        log.error(f"Error descargando {cliente}: {e}")
         raise
 
-def get_current_week() -> str:
+def get_current_week():
     w = date.today().isocalendar()[1]
     return str(w).zfill(2)
 
-def find_best_week() -> str:
+def find_best_week():
     return get_current_week()
 
-def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
+def read_falabella(file_bytes, tienda, producto):
     try:
         df = pd.read_excel(file_bytes, sheet_name="Sheet1", header=0)
         log.info(f"Falabella - Columnas: {list(df.columns[:15])}")
-        log.info(f"Falabella - Shape: {df.shape}")
         desc_col = None
         marca_col = None
         tienda_col = None
         for col in df.columns:
-            col_lower = str(col).lower().strip()
-            if "descripción" in col_lower or "descripcion" in col_lower:
+            cl = str(col).lower().strip()
+            if "descripción" in cl or "descripcion" in cl:
                 desc_col = col
-            elif "marca" in col_lower:
+            elif "marca" in cl:
                 marca_col = col
         if len(df.columns) > 12:
             tienda_col = df.columns[12]
-        log.info(f"Falabella - Columnas detectadas: desc={desc_col}, marca={marca_col}, tienda={tienda_col}")
         if not desc_col or not marca_col or not tienda_col:
-            log.warning(f"Falabella: Columnas faltantes")
+            log.warning("Falabella: Columnas faltantes")
             return []
-        tienda_lower = tienda.lower().strip()
-        tienda_words = tienda_lower.split()
+        tienda_words = tienda.lower().strip().split()
         mask = pd.Series([False] * len(df))
         for word in tienda_words:
             if len(word) > 2:
-                word_mask = df[tienda_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
-                mask = mask | word_mask
+                mask = mask | df[tienda_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
         filtered = df[mask]
         if len(filtered) == 0:
-            log.info(f"Falabella: No hay tiendas que coincidan con '{tienda}'. Disponibles: {df[tienda_col].unique()[:5]}")
+            log.info(f"Falabella: Sin coincidencia para '{tienda}'")
             return []
         results = []
         for _, row in filtered.iterrows():
@@ -110,25 +101,16 @@ def read_falabella(file_bytes: io.BytesIO, tienda: str, producto: str | None) ->
             if producto and producto.upper() not in desc_str.upper():
                 continue
             if desc_str:
-                results.append({
-                    "modelo": "",
-                    "descripcion": desc_str[:50],
-                    "marca": marca,
-                    "stock": 0,
-                    "trf": 0,
-                })
+                results.append({"modelo": "", "descripcion": desc_str[:50], "marca": marca, "stock": 0, "trf": 0})
         return results[:20]
     except Exception as e:
         log.error(f"Error leyendo Falabella: {e}")
-        import traceback
-        log.error(traceback.format_exc())
         return []
 
-def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
+def read_ripley(file_bytes, tienda, producto):
     try:
         df = pd.read_excel(file_bytes, sheet_name="BASE", header=0)
         log.info(f"Ripley - Columnas: {list(df.columns[:10])}")
-        log.info(f"Ripley - Shape: {df.shape}")
         sucursal_col = next((c for c in df.columns if str(c).strip().lower() == "sucursal"), None)
         if not sucursal_col:
             sucursal_col = next((c for c in df.columns if "sucursal" in str(c).lower() and "cod" not in str(c).lower()), None)
@@ -136,22 +118,19 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
         if not sucursal_col:
             log.warning("Ripley: No se encontro columna Sucursal")
             return []
-        tienda_lower = tienda.lower().strip()
-        tienda_words = tienda_lower.split()
+        tienda_words = tienda.lower().strip().split()
         mask = pd.Series([False] * len(df))
         for word in tienda_words:
             if len(word) > 2:
-                word_mask = df[sucursal_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
-                mask = mask | word_mask
+                mask = mask | df[sucursal_col].astype(str).str.lower().str.contains(word, na=False, regex=False)
         filtered = df[mask]
         if len(filtered) == 0:
-            log.info(f"Ripley: No hay sucursales que coincidan con '{tienda}'. Disponibles: {df[sucursal_col].unique()[:5]}")
+            log.info(f"Ripley: Sin coincidencia para '{tienda}'")
             return []
         desc_col = next((c for c in df.columns if "desc" in str(c).lower() and "art" in str(c).lower()), None)
         stock_col = next((c for c in df.columns if "stock" in str(c).lower() and "disponible" in str(c).lower() and "(u)" in str(c).lower()), None)
         if not stock_col:
             stock_col = next((c for c in df.columns if "stock" in str(c).lower() and "(u)" in str(c).lower()), None)
-        log.info(f"Ripley - desc_col={desc_col}, stock_col={stock_col}, marca_col={marca_col}")
         results = []
         for _, row in filtered.iterrows():
             desc_str = str(row.get(desc_col, "")).strip() if desc_col else ""
@@ -160,53 +139,31 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
             if producto and producto.upper() not in desc_str.upper():
                 continue
             if desc_str:
-                results.append({
-                    "modelo": "",
-                    "descripcion": desc_str[:50],
-                    "marca": marca,
-                    "stock": stock_val,
-                    "trf": 0,
-                })
+                results.append({"modelo": "", "descripcion": desc_str[:50], "marca": marca, "stock": stock_val, "trf": 0})
         return results[:20]
     except Exception as e:
         log.error(f"Error leyendo Ripley: {e}")
         return []
 
-def read_generic(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> list:
+def read_generic(file_bytes, tienda, producto):
     try:
         xl = pd.ExcelFile(file_bytes)
         df = pd.read_excel(file_bytes, sheet_name=xl.sheet_names[0], header=0)
     except Exception:
         return []
-    tienda_col = next(
-        (c for c in df.columns if "tienda" in str(c).lower() or "sala" in str(c).lower()
-         or "sucursal" in str(c).lower() or "local" in str(c).lower()),
-        None,
-    )
+    tienda_col = next((c for c in df.columns if any(k in str(c).lower() for k in ["tienda","sala","sucursal","local"])), None)
     if tienda_col:
-        df = df[df[tienda_col].str.lower().str.contains(tienda.lower(), na=False)]
-    stock_col = next(
-        (c for c in df.columns if "stock" in str(c).lower() and "disponible" in str(c).lower()),
-        next((c for c in df.columns if "stock" in str(c).lower()), None),
-    )
-    desc_col = next(
-        (c for c in df.columns if "desc" in str(c).lower() or "nombre" in str(c).lower()),
-        None,
-    )
+        df = df[df[tienda_col].astype(str).str.lower().str.contains(tienda.lower(), na=False)]
+    stock_col = next((c for c in df.columns if "stock" in str(c).lower()), None)
+    desc_col = next((c for c in df.columns if "desc" in str(c).lower() or "nombre" in str(c).lower()), None)
     results = []
     for _, row in df.iterrows():
         stock_val = int(float(row[stock_col])) if stock_col and pd.notna(row[stock_col]) else 0
-        desc_str  = str(row[desc_col]) if desc_col and pd.notna(row[desc_col]) else ""
+        desc_str = str(row[desc_col]) if desc_col and pd.notna(row[desc_col]) else ""
         if producto and producto.upper() not in desc_str.upper():
             continue
         if stock_val != 0:
-            results.append({
-                "modelo": "",
-                "descripcion": desc_str,
-                "marca": "",
-                "stock": stock_val,
-                "trf": 0,
-            })
+            results.append({"modelo": "", "descripcion": desc_str, "marca": "", "stock": stock_val, "trf": 0})
     return results
 
 READER_MAP = {
@@ -217,27 +174,20 @@ READER_MAP = {
     "tottus":    read_generic,
 }
 
-def format_whatsapp(cliente, tienda, producto, results, week) -> str:
+def format_whatsapp(cliente, tienda, producto, results, week):
     if not results:
         filtro = f" de *{producto}*" if producto else ""
-        return (
-            f"No encontre stock{filtro} en *{cliente.upper()} {tienda.upper()}* "
-            f"(Semana {week}).\n\nVerifica el nombre de la tienda o el producto."
-        )
-    lines = [
-        f"*{cliente.upper()} -- {tienda.upper()}*",
-        f"_Semana {week}_ | {len(results)} referencia(s)",
-    ]
+        return f"No encontre stock{filtro} en *{cliente.upper()} {tienda.upper()}* (Semana {week}).\n\nVerifica el nombre de la tienda o el producto."
+    lines = [f"*{cliente.upper()} -- {tienda.upper()}*", f"_Semana {week}_ | {len(results)} referencia(s)"]
     if producto:
         lines.append(f"_{producto}_")
     lines.append("")
     for r in results[:20]:
         emoji = "+" if r["stock"] > 0 else "-"
-        desc  = r["descripcion"][:35]
-        lines.append(f"{emoji} *{r['modelo']}* | {desc}")
-        lines.append(f"   {r['marca']} | Stock: {r['stock']} | TRF: {r['trf']}")
+        lines.append(f"{emoji} {r['descripcion'][:35]}")
+        lines.append(f"   {r['marca']} | Stock: {r['stock']}")
     if len(results) > 20:
-        lines.append(f"\n_...y {len(results) - 20} referencias mas_")
+        lines.append(f"\n_...y {len(results) - 20} mas_")
     return "\n".join(lines)
 
 SYSTEM_PARSE = """
@@ -247,13 +197,17 @@ Del mensaje del usuario extrae:
 - tienda: nombre de la tienda o sala (ej. "Parque Arauco", "Costanera", "Vespucio")
 - producto: nombre o codigo del producto (opcional, puede ser null)
 
-Responde SOLO con JSON valido, sin texto adicional:
+IMPORTANTE: la palabra "stock" NO es un producto. Si el usuario dice "stock Ripley Los Dominicos", el producto es null.
+Palabras como "stock", "inventario", "consulta", "ver" NO son productos.
+
+Responde SOLO con JSON valido:
 {"cliente": "...", "tienda": "...", "producto": "..." }
-o si no puedes identificar cliente/tienda:
-{"error": "no entendi"}
+o {"error": "no entendi"}
 """
 
-def _parse_simple(msg: str) -> dict:
+PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "en", "de", "el", "la"}
+
+def _parse_simple(msg):
     msg_lower = msg.lower()
     cliente = None
     for c in READER_MAP:
@@ -263,6 +217,8 @@ def _parse_simple(msg: str) -> dict:
     if not cliente:
         return {"error": "no entendi"}
     resto = msg_lower.replace(cliente.lower(), "").strip()
+    for palabra in PALABRAS_IGNORAR:
+        resto = resto.replace(palabra, "").strip()
     TIENDAS = [
         "parque arauco", "alto las condes", "costanera center", "costanera",
         "los dominicos", "plaza vespucio", "vespucio", "florida center", "florida",
@@ -287,7 +243,7 @@ def _parse_simple(msg: str) -> dict:
     producto = resto.strip() if resto.strip() else None
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
-def parse_query(msg: str) -> dict:
+def parse_query(msg):
     try:
         ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         resp = ac.messages.create(
@@ -313,39 +269,36 @@ HELP_MSG = (
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    sender  = request.form.get("From", "")
+    sender = request.form.get("From", "")
     incoming = request.form.get("Body", "").strip()
     log.info("Mensaje de %s: %s", sender, incoming)
     resp = MessagingResponse()
     if sender not in NUMEROS_AUTORIZADOS:
-        log.warning("Numero no autorizado: %s", sender)
         return str(resp)
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
         return str(resp)
     try:
         parsed = parse_query(incoming)
-    except Exception as e:
-        log.error("Error parseando query: %s", e)
+    except Exception:
         resp.message("No pude entender tu consulta. Escribe *ayuda* para ver ejemplos.")
         return str(resp)
     if "error" in parsed:
-        resp.message(
-            "No entendi tu consulta\n\n"
-            "Escribe algo como:\n_Stock Falabella Parque Arauco_\n_Mario Kart Ripley Costanera_"
-        )
+        resp.message("No entendi tu consulta\n\nEscribe algo como:\n_Stock Falabella Parque Arauco_\n_Ripley Los Dominicos_")
         return str(resp)
-    cliente  = parsed.get("cliente", "").strip()
-    tienda   = parsed.get("tienda", "").strip()
+    cliente = parsed.get("cliente", "").strip()
+    tienda = parsed.get("tienda", "").strip()
     producto = parsed.get("producto")
-    week     = find_best_week()
+    if producto and producto.lower().strip() in PALABRAS_IGNORAR:
+        producto = None
+    week = find_best_week()
     reader_fn = READER_MAP.get(cliente.lower())
     if not reader_fn:
         resp.message(f"Cliente '{cliente}' no reconocido.\n\nDisponibles: {', '.join(READER_MAP)}")
         return str(resp)
     try:
         file_bytes = download_file_from_dropbox(cliente)
-        results    = reader_fn(file_bytes, tienda, producto)
+        results = reader_fn(file_bytes, tienda, producto)
     except Exception as e:
         log.error("Error leyendo archivo: %s", e)
         resp.message("Ocurrio un error leyendo el archivo. Intentalo de nuevo.")
