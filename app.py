@@ -187,8 +187,11 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
         log.info(f"Ripley - Columnas: {list(df.columns[:10])}")
         log.info(f"Ripley - Shape: {df.shape}")
 
-        # Filtrar por tienda (columna "Sucursal")
-        sucursal_col = next((c for c in df.columns if "sucursal" in str(c).lower()), None)
+        # Filtrar por tienda (columna "Sucursal" - NO "Cod. Sucursal")
+        # Prioriza "Sucursal" sin prefijo "Cod."
+        sucursal_col = next((c for c in df.columns if str(c).strip().lower() == "sucursal"), None)
+        if not sucursal_col:
+            sucursal_col = next((c for c in df.columns if "sucursal" in str(c).lower() and "cod" not in str(c).lower()), None)
         marca_col = next((c for c in df.columns if "marca" in str(c).lower() and "cod" not in str(c).lower()), None)
 
         if not sucursal_col:
@@ -213,21 +216,30 @@ def read_ripley(file_bytes: io.BytesIO, tienda: str, producto: str | None) -> li
             log.info(f"Ripley: No hay sucursales que coincidan con '{tienda}'. Disponibles: {df[sucursal_col].unique()[:5]}")
             return []
 
+        # Detectar columna de descripción de producto y stock
+        desc_col = next((c for c in df.columns if "desc" in str(c).lower() and "art" in str(c).lower()), None)
+        stock_col = next((c for c in df.columns if "stock" in str(c).lower() and "disponible" in str(c).lower() and "(u)" in str(c).lower()), None)
+        if not stock_col:
+            stock_col = next((c for c in df.columns if "stock" in str(c).lower() and "(u)" in str(c).lower()), None)
+
+        log.info(f"Ripley - desc_col={desc_col}, stock_col={stock_col}, marca_col={marca_col}")
+
         results = []
         for _, row in filtered.iterrows():
-            desc = str(row.get(sucursal_col, "")).strip()
+            desc_str = str(row.get(desc_col, "")).strip() if desc_col else ""
             marca = str(row.get(marca_col, "")).strip() if marca_col else ""
+            stock_val = int(float(row.get(stock_col, 0))) if stock_col and pd.notna(row.get(stock_col)) else 0
 
-            # Filtrar por producto
-            if producto and producto.upper() not in desc.upper():
+            # Filtrar por producto (buscar en descripción del artículo)
+            if producto and producto.upper() not in desc_str.upper():
                 continue
 
-            if desc:
+            if desc_str:
                 results.append({
                     "modelo": "",
-                    "descripcion": desc[:50],
+                    "descripcion": desc_str[:50],
                     "marca": marca,
-                    "stock": 0,
+                    "stock": stock_val,
                     "trf": 0,
                 })
 
@@ -483,4 +495,3 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
