@@ -15,7 +15,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-app = Flask(__name__)
+app = Flash(__name__)
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
@@ -110,10 +110,10 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
             f"Verifica el nombre de la tienda."
         )
 
-    header = f"*{cliente.upper()} - {tienda.upper()}* (Sem {semana})\n"
+    header = f"\U0001f4e6 *{cliente.upper()} \u2014 {tienda.upper()}* (Sem {semana})\n"
     header += f"_{len(results)} producto(s)_"
     if producto:
-        header += f" - _{producto}_"
+        header += f" \u00b7 _{producto}_"
     header += "\n"
 
     lineas = [header]
@@ -121,9 +121,9 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     # Mostrar primeros 20 o todos si son pocos
     max_display = min(20, len(results))
     for r in results[:max_display]:
-        estado = "OK" if r["stock"] > 0 else "!!"
+        estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         lineas.append(f"{estado} {r['descripcion']}")
-        lineas.append(f"   SKU: {r['sku_mattel']} - Stock: {r['stock']}")
+        lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']}")
 
     if len(results) > max_display:
         lineas.append(f"\n_...y {len(results)-max_display} mas_")
