@@ -125,7 +125,10 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     if len(results) > max_display:
         lineas.append(f"\n_...y {len(results)-max_display} mÃ¡s_")
 
-    return "\n".join(lineas)on Claude ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    return "\n".join(lineas)
+
+
+# ââ Parser con Claude ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 SYSTEM_PARSE = f"""
 Extrae del mensaje del usuario:
