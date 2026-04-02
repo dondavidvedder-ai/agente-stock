@@ -4,7 +4,7 @@ Un solo archivo Excel con todos los clientes.
 Columnas: Cliente, Nombre Tienda, Descripcion producto, Marca, Stock
 """
 
-import os, io, json, logging
+import os, io, json, logging, re
 from datetime import date
 
 import pandas as pd
@@ -35,6 +35,9 @@ NUMEROS_AUTORIZADOS = {
 
 CLIENTES_VALIDOS = {"falabella", "ripley", "paris", "jumbo", "tottus", "walmart"}
 PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "dame", "hay"}
+
+# PatrÃ³n para detectar cÃ³digos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
+SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
 _cache = {"data": None}
 
@@ -134,9 +137,15 @@ SYSTEM_PARSE = f"""
 Extrae del mensaje del usuario:
 - cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
 - tienda: nombre de tienda (obligatorio)
-- producto: marca o nombre de producto (opcional, null si no se menciona)
+- producto: marca, nombre de producto, o cÃ³digo SKU Mattel (opcional, null si no se menciona)
 
+IMPORTANTE: Los cÃ³digos SKU Mattel son combinaciones cortas de letras y nÃºmeros como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
 La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
+
+Ejemplos:
+- "C4982 Walmart Vitacura" â cliente=walmart, tienda=vitacura, producto=C4982
+- "Barbie Ripley Los Dominicos" â cliente=ripley, tienda=los dominicos, producto=barbie
+- "Falabella Parque Arauco" â cliente=falabella, tienda=parque arauco, producto=null
 
 Responde SOLO con JSON:
 {{"cliente":"...","tienda":"...","producto":null}}
@@ -177,6 +186,14 @@ def parse_simple(msg: str) -> dict:
     if not cliente:
         return {"error": "no entendi"}
 
+    # Detectar SKU Mattel antes de todo (ej: C4982, DXV29, HRJ78)
+    sku_candidate = None
+    sku_match = SKU_RE.search(lower)
+    if sku_match:
+        sku_candidate = sku_match.group(1).upper()
+        lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
+        lower = " ".join(lower.split())
+
     # Detectar tiendas conocidas
     TIENDAS = [
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
@@ -185,6 +202,8 @@ def parse_simple(msg: str) -> dict:
         "la reina", "san bernardo", "rancagua", "antofagasta", "concepcion",
         "la serena", "iquique", "temuco", "valdivia", "puerto montt",
         "huerfanos", "astor", "arica", "chillan", "copiapo", "coquimbo",
+        "vitacura", "providencia", "nunoa", "las condes", "recoleta",
+        "pudahuel", "cerrillos", "puente alto", "la florida",
     ]
     tienda = None
     for t in TIENDAS:
@@ -204,6 +223,9 @@ def parse_simple(msg: str) -> dict:
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
+    # Si no hay otro producto pero sÃ­ habÃ­a un SKU, usarlo como producto
+    if not producto and sku_candidate:
+        producto = sku_candidate
 
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
@@ -219,6 +241,11 @@ HELP_MSG = (
     "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
 )
 
+def twiml(resp):
+    """Retorna TwiML con charset UTF-8 explÃ­cito para evitar encoding roto."""
+    return str(resp), 200, {'Content-Type': 'text/xml; charset=utf-8'}
+
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
     sender = request.form.get("From", "")
@@ -228,18 +255,18 @@ def whatsapp():
     resp = MessagingResponse()
 
     if sender not in NUMEROS_AUTORIZADOS:
-        return str(resp)
+        return twiml(resp)
 
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
-        return str(resp)
+        return twiml(resp)
 
     parsed = parse_query(incoming)
     log.info("Parsed: %s", parsed)
 
     if "error" in parsed:
-        resp.message("No entendÃ­ ð\nEscribe por ejemplo:\n_Ripley Los Dominicos_")
-        return str(resp)
+        resp.message("No entendi\nEscribe por ejemplo:\nRipley Los Dominicos")
+        return twiml(resp)
 
     cliente = parsed.get("cliente", "").strip()
     tienda = parsed.get("tienda", "").strip()
@@ -251,11 +278,11 @@ def whatsapp():
         results = consultar_stock(cliente, tienda, producto)
     except Exception as e:
         log.error("Error consultando stock: %s", e)
-        resp.message("â ï¸ Error leyendo el archivo. Intenta de nuevo.")
-        return str(resp)
+        resp.message("Error leyendo el archivo. Intenta de nuevo.")
+        return twiml(resp)
 
     resp.message(format_respuesta(cliente, tienda, producto, results))
-    return str(resp)
+    return twiml(resp)
 
 
 @app.route("/test")
