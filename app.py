@@ -36,7 +36,7 @@ NUMEROS_AUTORIZADOS = {
 CLIENTES_VALIDOS = {"falabella", "ripley", "paris", "jumbo", "tottus", "walmart"}
 PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "dame", "hay"}
 
-# PatrÃ³n para detectar cÃ³digos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
+# Patrón para detectar códigos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
 SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
 _cache = {"data": None}
@@ -73,7 +73,7 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
         log.info(f"Sin resultados para {cliente}/{tienda}. Tiendas disponibles: {list(tiendas_disponibles)}")
         return []
 
-    # Filtrar por producto si se especificÃ³
+    # Filtrar por producto si se especificó
     if producto:
         filtered = filtered[
             filtered["Descripcion producto"].str.upper().str.contains(producto.upper(), na=False) |
@@ -91,7 +91,7 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             "stock": stock,
         })
 
-    # Si hay producto especÃ­fico: mostrar TODOS los resultados
+    # Si hay producto específico: mostrar TODOS los resultados
     if producto:
         return results
 
@@ -110,10 +110,10 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
             f"Verifica el nombre de la tienda."
         )
 
-    header = f"ð¦ *{cliente.upper()} â {tienda.upper()}* (Sem {semana})\n"
+    header = f"*{cliente.upper()} - {tienda.upper()}* (Sem {semana})\n"
     header += f"_{len(results)} producto(s)_"
     if producto:
-        header += f" Â· _{producto}_"
+        header += f" - _{producto}_"
     header += "\n"
 
     lineas = [header]
@@ -121,31 +121,31 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     # Mostrar primeros 20 o todos si son pocos
     max_display = min(20, len(results))
     for r in results[:max_display]:
-        emoji = "â" if r["stock"] > 0 else "â ï¸"
-        lineas.append(f"{emoji} {r['descripcion']}")
-        lineas.append(f"   SKU: {r['sku_mattel']} Â· Stock: {r['stock']}")
+        estado = "OK" if r["stock"] > 0 else "!!"
+        lineas.append(f"{estado} {r['descripcion']}")
+        lineas.append(f"   SKU: {r['sku_mattel']} - Stock: {r['stock']}")
 
     if len(results) > max_display:
-        lineas.append(f"\n_...y {len(results)-max_display} mÃ¡s_")
+        lineas.append(f"\n_...y {len(results)-max_display} mas_")
 
     return "\n".join(lineas)
 
 
-# ââ Parser con Claude ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Parser con Claude ──────────────────────────────────────────────────────────
 
 SYSTEM_PARSE = f"""
 Extrae del mensaje del usuario:
 - cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
 - tienda: nombre de tienda (obligatorio)
-- producto: marca, nombre de producto, o cÃ³digo SKU Mattel (opcional, null si no se menciona)
+- producto: marca, nombre de producto, o código SKU Mattel (opcional, null si no se menciona)
 
-IMPORTANTE: Los cÃ³digos SKU Mattel son combinaciones cortas de letras y nÃºmeros como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
+IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
 La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
 
 Ejemplos:
-- "C4982 Walmart Vitacura" â cliente=walmart, tienda=vitacura, producto=C4982
-- "Barbie Ripley Los Dominicos" â cliente=ripley, tienda=los dominicos, producto=barbie
-- "Falabella Parque Arauco" â cliente=falabella, tienda=parque arauco, producto=null
+- "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
+- "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
+- "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
 
 Responde SOLO con JSON:
 {{"cliente":"...","tienda":"...","producto":null}}
@@ -163,7 +163,7 @@ def parse_query(msg: str) -> dict:
         )
         return json.loads(resp.content[0].text.strip())
     except Exception as e:
-        log.warning("Claude API fallo: %s â usando parseo simple", e)
+        log.warning("Claude API fallo: %s — usando parseo simple", e)
         return parse_simple(msg)
 
 def parse_simple(msg: str) -> dict:
@@ -223,26 +223,26 @@ def parse_simple(msg: str) -> dict:
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
-    # Si no hay otro producto pero sÃ­ habÃ­a un SKU, usarlo como producto
+    # Si no hay otro producto pero sí había un SKU, usarlo como producto
     if not producto and sku_candidate:
         producto = sku_candidate
 
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
 
-# ââ Endpoints âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 HELP_MSG = (
-    "Hola! Soy el asistente de stock ð¦\n\n"
+    "Hola! Soy el asistente de stock.\n\n"
     "Escribe algo como:\n"
-    "â¢ _Ripley Los Dominicos_\n"
-    "â¢ _Falabella Parque Arauco_\n"
-    "â¢ _Barbie Ripley Costanera_\n\n"
+    "- _Ripley Los Dominicos_\n"
+    "- _Falabella Parque Arauco_\n"
+    "- _Barbie Ripley Costanera_\n\n"
     "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
 )
 
 def twiml(resp):
-    """Retorna TwiML con charset UTF-8 explÃ­cito para evitar encoding roto."""
+    """Retorna TwiML con charset UTF-8 explícito para evitar encoding roto."""
     return str(resp), 200, {'Content-Type': 'text/xml; charset=utf-8'}
 
 
