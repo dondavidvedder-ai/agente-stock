@@ -15,7 +15,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-app = Flash(__name__)
+app = Flask(__name__)
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
