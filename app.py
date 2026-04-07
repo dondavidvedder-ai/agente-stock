@@ -198,16 +198,27 @@ def parse_simple(msg: str) -> dict:
         lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
         lower = " ".join(lower.split())
 
-    # Detectar tiendas conocidas
+    # Detectar tiendas conocidas (frases multi-palabra primero, luego palabras sueltas)
     TIENDAS = [
+        # frases multi-palabra
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
-        "costanera", "plaza vespucio", "vespucio", "florida center", "florida",
-        "plaza oeste", "plaza egana", "egana", "maipu", "quilicura",
-        "la reina", "san bernardo", "rancagua", "antofagasta", "concepcion",
-        "la serena", "iquique", "temuco", "valdivia", "puerto montt",
-        "huerfanos", "astor", "arica", "chillan", "copiapo", "coquimbo",
-        "vitacura", "providencia", "nunoa", "las condes", "recoleta",
-        "pudahuel", "cerrillos", "puente alto", "la florida",
+        "plaza vespucio", "florida center", "plaza oeste", "plaza egana",
+        "san bernardo", "puerto montt", "puente alto", "la florida",
+        "la reina", "las condes", "la serena", "barros arana",
+        "marina arauco", "arauco maipu", "paseo estacion", "plaza trebol",
+        "portal belloto", "portal osorno", "portal temuco", "portal nunoa",
+        "el llano", "el roble",
+        # palabras sueltas
+        "costanera", "vespucio", "florida", "egana", "maipu", "quilicura",
+        "rancagua", "antofagasta", "concepcion", "iquique", "temuco",
+        "valdivia", "valparaiso", "huerfanos", "astor", "arica", "chillan",
+        "copiapo", "coquimbo", "vitacura", "providencia", "nunoa", "recoleta",
+        "pudahuel", "cerrillos", "bandera", "lyon", "huechuraba", "quilin",
+        "independencia", "quilpue", "quillota", "talcahuano", "coronel",
+        "curico", "melipilla", "ovalle", "calama", "renca", "dehesa",
+        "barnechea", "macul", "tobalaba", "concon", "linares", "talca",
+        "osorno", "angol", "villarrica", "buin", "talagante", "colina",
+        "alameda", "kennedy", "grecia", "vivaceta", "carrascal", "peñalolen",
     ]
     tienda = None
     for t in TIENDAS:
@@ -217,13 +228,25 @@ def parse_simple(msg: str) -> dict:
             break
 
     if not tienda:
+        # Heuristica: estructura tipica es [producto] [tienda]
+        # La tienda suele estar AL FINAL, el producto al principio
         palabras = lower.split()
-        if palabras:
-            tienda = " ".join(palabras[:3]).title()
-            lower = " ".join(palabras[3:])
-        else:
+        if not palabras:
             return {"error": "no entendi"}
-
+        if len(palabras) == 1:
+            tienda = palabras[0].title()
+            lower = ""
+        elif len(palabras) == 2:
+            tienda = palabras[-1].title()
+            lower = " ".join(palabras[:-1])
+        else:
+            # 3+ palabras: ultima(s) es la tienda, primeras son producto
+            if len(palabras[-1]) < 4:
+                tienda = " ".join(palabras[-2:]).title()
+                lower = " ".join(palabras[:-2])
+            else:
+                tienda = palabras[-1].title()
+                lower = " ".join(palabras[:-1])
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
