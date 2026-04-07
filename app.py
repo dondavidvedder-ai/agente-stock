@@ -21,7 +21,11 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 
 # UN solo archivo con todos los clientes
-DROPBOX_URL = "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
+# Actualiza STOCK_URL en Railway cada semana sin tocar el codigo
+DROPBOX_URL = os.environ.get(
+    "STOCK_URL",
+    "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
+)
 
 NUMEROS_AUTORIZADOS = {
     "whatsapp:+56926121144",
@@ -311,6 +315,15 @@ def test():
         "muestra": results[:5],
         "respuesta": format_respuesta(cliente, tienda, producto, results),
     }
+
+
+@app.route("/reload")
+def reload_data():
+    """Limpia el cache para forzar descarga del archivo actualizado desde Dropbox."""
+    _cache["data"] = None
+    url_activa = DROPBOX_URL[:60] + "..."
+    log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
+    return {"status": "ok", "mensaje": "Cache limpiado. El archivo se descargara en la proxima consulta.", "url": url_activa}, 200
 
 
 @app.route("/health")
