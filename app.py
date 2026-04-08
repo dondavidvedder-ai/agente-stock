@@ -21,7 +21,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 
 # UN solo archivo con todos los clientes
-# Actualiza STOCK_URL en Railway cada semana sin tocar el codigo
+# Actualiza STOCK_URL en Railway cada semana sin tocar el código
 DROPBOX_URL = os.environ.get(
     "STOCK_URL",
     "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
@@ -200,15 +200,15 @@ def parse_simple(msg: str) -> dict:
 
     # Detectar tiendas conocidas (frases multi-palabra primero, luego palabras sueltas)
     TIENDAS = [
-        # frases multi-palabra
+        # frases multi-palabra (van primero para que no se partan)
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
         "plaza vespucio", "florida center", "plaza oeste", "plaza egana",
         "san bernardo", "puerto montt", "puente alto", "la florida",
         "la reina", "las condes", "la serena", "barros arana",
         "marina arauco", "arauco maipu", "paseo estacion", "plaza trebol",
         "portal belloto", "portal osorno", "portal temuco", "portal nunoa",
-        "el llano", "el roble",
-        # palabras sueltas
+        "el llano", "el roble", "plaza vespucio",
+        # palabras sueltas (ciudades, barrios, sectores)
         "costanera", "vespucio", "florida", "egana", "maipu", "quilicura",
         "rancagua", "antofagasta", "concepcion", "iquique", "temuco",
         "valdivia", "valparaiso", "huerfanos", "astor", "arica", "chillan",
@@ -216,9 +216,12 @@ def parse_simple(msg: str) -> dict:
         "pudahuel", "cerrillos", "bandera", "lyon", "huechuraba", "quilin",
         "independencia", "quilpue", "quillota", "talcahuano", "coronel",
         "curico", "melipilla", "ovalle", "calama", "renca", "dehesa",
-        "barnechea", "macul", "tobalaba", "concon", "linares", "talca",
-        "osorno", "angol", "villarrica", "buin", "talagante", "colina",
-        "alameda", "kennedy", "grecia", "vivaceta", "carrascal", "peñalolen",
+        "barnechea", "macul", "tobalaba", "maipú", "ñuñoa", "concon",
+        "linares", "talca", "osorno", "angol", "villarrica", "frutillar",
+        "punta arenas", "buin", "talagante", "penaflor", "colina", "lampa",
+        "alameda", "vicuna", "mackenna", "apoquindo", "irarrazaval",
+        "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
+        "cisterna", "peñalolen", "peñaflor",
     ]
     tienda = None
     for t in TIENDAS:
@@ -229,28 +232,42 @@ def parse_simple(msg: str) -> dict:
 
     if not tienda:
         # Heuristica: estructura tipica es [producto] [tienda]
-        # La tienda suele estar AL FINAL, el producto al principio
+        # Si el texto no contiene palabras de marca/producto -> todo es tienda
+        MARCAS = {
+            "barbie", "reco", "hot", "wheels", "thomas", "train", "fisher",
+            "price", "mega", "uno", "mario", "kart", "disney", "pixar",
+            "polly", "pocket", "enchantimals", "monster", "high", "ever",
+            "after", "imaginext", "matchbox", "hotwheels", "mattel",
+        }
         palabras = lower.split()
         if not palabras:
             return {"error": "no entendi"}
-        if len(palabras) == 1:
+
+        tiene_marca = any(p in MARCAS for p in palabras)
+
+        if not tiene_marca:
+            # Sin marca = todo el texto restante es el nombre de la tienda
+            tienda = " ".join(palabras).title()
+            lower = ""
+        elif len(palabras) == 1:
             tienda = palabras[0].title()
             lower = ""
         elif len(palabras) == 2:
             tienda = palabras[-1].title()
             lower = " ".join(palabras[:-1])
         else:
-            # 3+ palabras: ultima(s) es la tienda, primeras son producto
+            # Con marca: producto al inicio, tienda al final
             if len(palabras[-1]) < 4:
                 tienda = " ".join(palabras[-2:]).title()
                 lower = " ".join(palabras[:-2])
             else:
                 tienda = palabras[-1].title()
                 lower = " ".join(palabras[:-1])
+
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
-    # Si no hay otro producto pero sí había un SKU, usarlo como producto
+    # Si no hay otro producto pero si habia un SKU, usarlo como producto
     if not producto and sku_candidate:
         producto = sku_candidate
 
