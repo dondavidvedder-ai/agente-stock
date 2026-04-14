@@ -83,16 +83,20 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             filtered["Descripcion producto"].str.upper().str.contains(producto.upper(), na=False) |
             filtered["Marca"].str.upper().str.contains(producto.upper(), na=False) |
             filtered["Sku Mattel"].str.upper().str.contains(producto.upper(), na=False) |
-            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
+            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False) |
+            filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
         ]
 
     results = []
     for _, row in filtered.iterrows():
         stock = int(row["Stock"]) if pd.notna(row["Stock"]) else 0
+        venta = int(row["Venta"]) if pd.notna(row.get("Venta")) else 0
         results.append({
             "sku_mattel": str(row.get("Sku Mattel", "")),
             "descripcion": str(row.get("Descripcion producto", ""))[:60],
+            "actividad": str(row.get("Actividad", "")),
             "stock": stock,
+            "venta": venta,
         })
 
     # Si hay producto específico: mostrar TODOS los resultados
@@ -127,7 +131,7 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     for r in results[:max_display]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         lineas.append(f"{estado} {r['descripcion']}")
-        lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']}")
+        lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
 
     if len(results) > max_display:
         lineas.append(f"\n_...y {len(results)-max_display} mas_")
@@ -232,7 +236,7 @@ def parse_simple(msg: str) -> dict:
 
     if not tienda:
         # Heuristica: estructura tipica es [producto] [tienda]
-        # Si el texto no contiene palabras de marca/producto -> todo es tienda
+        # Si el texto no contiene palabras de marca/producto → todo es tienda
         MARCAS = {
             "barbie", "reco", "hot", "wheels", "thomas", "train", "fisher",
             "price", "mega", "uno", "mario", "kart", "disney", "pixar",
