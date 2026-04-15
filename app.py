@@ -20,8 +20,6 @@ app = Flask(__name__)
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 
-# UN solo archivo con todos los clientes
-# Actualiza STOCK_URL en Railway cada semana sin tocar el código
 DROPBOX_URL = os.environ.get(
     "STOCK_URL",
     "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
@@ -40,13 +38,11 @@ NUMEROS_AUTORIZADOS = {
 CLIENTES_VALIDOS = {"falabella", "ripley", "paris", "jumbo", "tottus", "walmart"}
 PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "dame", "hay"}
 
-# Patrón para detectar códigos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
 SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
 _cache = {"data": None}
 
 def get_dataframe():
-    """Descarga el archivo de Dropbox (o usa cache)."""
     if _cache["data"] is not None:
         return _cache["data"]
     log.info("Descargando archivo desde Dropbox...")
@@ -58,26 +54,17 @@ def get_dataframe():
     return df
 
 def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
-    """Filtra el DataFrame por cliente, tienda y producto opcional."""
     df = get_dataframe()
-
-    # Filtrar por cliente
     mask_c = df["Cliente"].str.lower() == cliente.lower()
-
-    # Filtrar por tienda (cualquier palabra)
     mask_t = pd.Series([False] * len(df), index=df.index)
     for word in tienda.lower().split():
         if len(word) > 2:
             mask_t |= df["Nombre Tienda"].str.lower().str.contains(word, na=False, regex=False)
-
     filtered = df[mask_c & mask_t]
-
     if len(filtered) == 0:
         tiendas_disponibles = df[mask_c]["Nombre Tienda"].unique()[:5]
         log.info(f"Sin resultados para {cliente}/{tienda}. Tiendas disponibles: {list(tiendas_disponibles)}")
         return []
-
-    # Filtrar por producto si se especificó
     if producto:
         filtered = filtered[
             filtered["Descripcion producto"].str.upper().str.contains(producto.upper(), na=False) |
@@ -86,7 +73,6 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             filtered["descuento"].str.upper().str.contains(producto.upper(), na=False) |
             filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
         ]
-
     results = []
     for _, row in filtered.iterrows():
         stock = int(row["Stock"]) if pd.notna(row["Stock"]) else 0
@@ -98,44 +84,33 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             "stock": stock,
             "venta": venta,
         })
-
-    # Si hay producto específico: mostrar TODOS los resultados
     if producto:
         return results
-
-    # Si NO hay producto: ordenar por stock descendente y devolver TOP 50
     results.sort(key=lambda x: x["stock"], reverse=True)
     return results[:50]
 
 
 def format_respuesta(cliente, tienda, producto, results) -> str:
     semana = str(date.today().isocalendar()[1]).zfill(2)
-
     if not results:
         filtro = f" de *{producto}*" if producto else ""
         return (
             f"Sin stock{filtro} en *{cliente.upper()} {tienda.upper()}* (Sem {semana}).\n"
             f"Verifica el nombre de la tienda."
         )
-
     header = f"\U0001f4e6 *{cliente.upper()} \u2014 {tienda.upper()}* (Sem {semana})\n"
     header += f"_{len(results)} producto(s)_"
     if producto:
         header += f" \u00b7 _{producto}_"
     header += "\n"
-
     lineas = [header]
-
-    # Mostrar primeros 20 o todos si son pocos
     max_display = min(20, len(results))
     for r in results[:max_display]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         lineas.append(f"{estado} {r['descripcion']}")
         lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
-
     if len(results) > max_display:
         lineas.append(f"\n_...y {len(results)-max_display} mas_")
-
     return "\n".join(lineas)
 
 
@@ -153,6 +128,7 @@ La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
 Ejemplos:
 - "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
 - "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
+- "Spinner Falabella Centro" → cliente=falabella, tienda=centro, producto=spinner
 - "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
 
 Responde SOLO con JSON:
@@ -177,34 +153,24 @@ def parse_query(msg: str) -> dict:
 def parse_simple(msg: str) -> dict:
     """Parseo de respaldo sin API."""
     lower = msg.lower()
-
-    # Eliminar palabras a ignorar
     for w in PALABRAS_IGNORAR:
         lower = lower.replace(w, " ")
-    lower = " ".join(lower.split())  # normalizar espacios
-
-    # Detectar cliente
+    lower = " ".join(lower.split())
     cliente = None
     for c in CLIENTES_VALIDOS:
         if c in lower:
             cliente = c.capitalize()
             lower = lower.replace(c, " ").strip()
             break
-
     if not cliente:
         return {"error": "no entendi"}
-
-    # Detectar SKU Mattel antes de todo (ej: C4982, DXV29, HRJ78)
     sku_candidate = None
     sku_match = SKU_RE.search(lower)
     if sku_match:
         sku_candidate = sku_match.group(1).upper()
         lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
         lower = " ".join(lower.split())
-
-    # Detectar tiendas conocidas (frases multi-palabra primero, luego palabras sueltas)
     TIENDAS = [
-        # frases multi-palabra (van primero para que no se partan)
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
         "plaza vespucio", "florida center", "plaza oeste", "plaza egana",
         "san bernardo", "puerto montt", "puente alto", "la florida",
@@ -212,7 +178,6 @@ def parse_simple(msg: str) -> dict:
         "marina arauco", "arauco maipu", "paseo estacion", "plaza trebol",
         "portal belloto", "portal osorno", "portal temuco", "portal nunoa",
         "el llano", "el roble", "plaza vespucio",
-        # palabras sueltas (ciudades, barrios, sectores)
         "costanera", "vespucio", "florida", "egana", "maipu", "quilicura",
         "rancagua", "antofagasta", "concepcion", "iquique", "temuco",
         "valdivia", "valparaiso", "huerfanos", "astor", "arica", "chillan",
@@ -225,7 +190,7 @@ def parse_simple(msg: str) -> dict:
         "punta arenas", "buin", "talagante", "penaflor", "colina", "lampa",
         "alameda", "vicuna", "mackenna", "apoquindo", "irarrazaval",
         "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
-        "cisterna", "peñalolen", "peñaflor",
+        "cisterna", "peñalolen", "peñaflor", "centro",
     ]
     tienda = None
     for t in TIENDAS:
@@ -233,10 +198,7 @@ def parse_simple(msg: str) -> dict:
             tienda = t.title()
             lower = lower.replace(t, " ").strip()
             break
-
     if not tienda:
-        # Heuristica: estructura tipica es [producto] [tienda]
-        # Si el texto no contiene palabras de marca/producto → todo es tienda
         MARCAS = {
             "barbie", "reco", "hot", "wheels", "thomas", "train", "fisher",
             "price", "mega", "uno", "mario", "kart", "disney", "pixar",
@@ -246,11 +208,8 @@ def parse_simple(msg: str) -> dict:
         palabras = lower.split()
         if not palabras:
             return {"error": "no entendi"}
-
         tiene_marca = any(p in MARCAS for p in palabras)
-
         if not tiene_marca:
-            # Sin marca = todo el texto restante es el nombre de la tienda
             tienda = " ".join(palabras).title()
             lower = ""
         elif len(palabras) == 1:
@@ -260,21 +219,17 @@ def parse_simple(msg: str) -> dict:
             tienda = palabras[-1].title()
             lower = " ".join(palabras[:-1])
         else:
-            # Con marca: producto al inicio, tienda al final
             if len(palabras[-1]) < 4:
                 tienda = " ".join(palabras[-2:]).title()
                 lower = " ".join(palabras[:-2])
             else:
                 tienda = palabras[-1].title()
                 lower = " ".join(palabras[:-1])
-
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
-    # Si no hay otro producto pero si habia un SKU, usarlo como producto
     if not producto and sku_candidate:
         producto = sku_candidate
-
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
 
@@ -290,7 +245,6 @@ HELP_MSG = (
 )
 
 def twiml(resp):
-    """Retorna TwiML con charset UTF-8 explícito para evitar encoding roto."""
     return str(resp), 200, {'Content-Type': 'text/xml; charset=utf-8'}
 
 
@@ -299,59 +253,47 @@ def whatsapp():
     sender = request.form.get("From", "")
     incoming = request.form.get("Body", "").strip()
     log.info("De %s: %s", sender, incoming)
-
     resp = MessagingResponse()
-
     if sender not in NUMEROS_AUTORIZADOS:
         return twiml(resp)
-
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
         return twiml(resp)
-
     parsed = parse_query(incoming)
     log.info("Parsed: %s", parsed)
-
     if "error" in parsed:
         resp.message("No entendi\nEscribe por ejemplo:\nRipley Los Dominicos")
         return twiml(resp)
-
     cliente = parsed.get("cliente", "").strip()
     tienda = parsed.get("tienda", "").strip()
     producto = parsed.get("producto")
     if producto and producto.lower() in PALABRAS_IGNORAR:
         producto = None
-
     try:
         results = consultar_stock(cliente, tienda, producto)
     except Exception as e:
         log.error("Error consultando stock: %s", e)
         resp.message("Error leyendo el archivo. Intenta de nuevo.")
         return twiml(resp)
-
     resp.message(format_respuesta(cliente, tienda, producto, results))
     return twiml(resp)
 
 
 @app.route("/test")
 def test():
-    """Endpoint para probar sin WhatsApp. Ej: /test?msg=Ripley+Los+Dominicos"""
     msg = request.args.get("msg", "Ripley Los Dominicos")
     parsed = parse_query(msg)
     if "error" in parsed:
         return {"error": "No se pudo parsear", "msg": msg}
-
     cliente = parsed.get("cliente", "")
     tienda = parsed.get("tienda", "")
     producto = parsed.get("producto")
     if producto and producto.lower() in PALABRAS_IGNORAR:
         producto = None
-
     try:
         results = consultar_stock(cliente, tienda, producto)
     except Exception as e:
         return {"error": str(e)}
-
     return {
         "parsed": parsed,
         "producto_final": producto,
@@ -363,7 +305,6 @@ def test():
 
 @app.route("/reload")
 def reload_data():
-    """Limpia el cache para forzar descarga del archivo actualizado desde Dropbox."""
     _cache["data"] = None
     url_activa = DROPBOX_URL[:60] + "..."
     log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
