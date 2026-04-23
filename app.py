@@ -43,6 +43,7 @@ SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 _cache = {"data": None}
 
 def get_dataframe():
+    """Descarga el archivo de Dropbox (o usa cache)."""
     if _cache["data"] is not None:
         return _cache["data"]
     log.info("Descargando archivo desde Dropbox...")
@@ -53,89 +54,108 @@ def get_dataframe():
     _cache["data"] = df
     return df
 
-def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
+def consultar_stock(cliente: str, tienda: str, producto) -> list:
+    """Filtra el DataFrame por cliente, tienda y producto opcional."""
     df = get_dataframe()
+
     mask_c = df["Cliente"].str.lower() == cliente.lower()
+
     mask_t = pd.Series([False] * len(df), index=df.index)
     for word in tienda.lower().split():
         if len(word) > 2:
             mask_t |= df["Nombre Tienda"].str.lower().str.contains(word, na=False, regex=False)
+
     filtered = df[mask_c & mask_t]
+
     if len(filtered) == 0:
         tiendas_disponibles = df[mask_c]["Nombre Tienda"].unique()[:5]
         log.info(f"Sin resultados para {cliente}/{tienda}. Tiendas disponibles: {list(tiendas_disponibles)}")
         return []
+
     if producto:
-        filtered = filtered[
+        mask_prod = (
             filtered["Descripcion producto"].str.upper().str.contains(producto.upper(), na=False) |
             filtered["Marca"].str.upper().str.contains(producto.upper(), na=False) |
             filtered["Sku Mattel"].str.upper().str.contains(producto.upper(), na=False) |
-            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False) |
-            filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
-        ]
+            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
+        )
+        if "Actividad" in filtered.columns:
+            mask_prod |= filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
+        filtered = filtered[mask_prod]
+
     results = []
     for _, row in filtered.iterrows():
-        stock = int(row["Stock"]) if pd.notna(row["Stock"]) else 0
-        venta = int(row["Venta"]) if pd.notna(row.get("Venta")) else 0
+        try:
+            stock = int(row["Stock"]) if pd.notna(row["Stock"]) else 0
+        except (ValueError, TypeError):
+            stock = 0
+        try:
+            venta = int(row["Venta"]) if "Venta" in row.index and pd.notna(row["Venta"]) else 0
+        except (ValueError, TypeError):
+            venta = 0
         results.append({
             "sku_mattel": str(row.get("Sku Mattel", "")),
             "descripcion": str(row.get("Descripcion producto", ""))[:60],
-            "actividad": str(row.get("Actividad", "")),
+            "actividad": str(row.get("Actividad", "")) if "Actividad" in row.index else "",
             "stock": stock,
             "venta": venta,
         })
+
     if producto:
         return results
+
     results.sort(key=lambda x: x["stock"], reverse=True)
     return results[:50]
 
 
 def format_respuesta(cliente, tienda, producto, results) -> str:
     semana = str(date.today().isocalendar()[1]).zfill(2)
+
     if not results:
         filtro = f" de *{producto}*" if producto else ""
         return (
             f"Sin stock{filtro} en *{cliente.upper()} {tienda.upper()}* (Sem {semana}).\n"
             f"Verifica el nombre de la tienda."
         )
+
     header = f"\U0001f4e6 *{cliente.upper()} \u2014 {tienda.upper()}* (Sem {semana})\n"
     header += f"_{len(results)} producto(s)_"
     if producto:
         header += f" \u00b7 _{producto}_"
     header += "\n"
+
     lineas = [header]
+
     max_display = min(20, len(results))
     for r in results[:max_display]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         lineas.append(f"{estado} {r['descripcion']}")
         lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
+
     if len(results) > max_display:
         lineas.append(f"\n_...y {len(results)-max_display} mas_")
+
     return "\n".join(lineas)
 
 
-# ── Parser con Claude ──────────────────────────────────────────────────────────
-
-SYSTEM_PARSE = f"""
+SYSTEM_PARSE = """
 Extrae del mensaje del usuario:
-- cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
+- cliente: uno de [falabella, jumbo, paris, ripley, tottus, walmart] (obligatorio)
 - tienda: nombre de tienda (obligatorio)
-- producto: marca, nombre de producto, actividad o código SKU Mattel (opcional, null si no se menciona)
+- producto: marca, nombre de producto, o codigo SKU Mattel (opcional, null si no se menciona)
 
-IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
-La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
-Nombres de actividades/promociones como "Venta Insólita", "Cyber", "Black Friday" son PRODUCTOS a filtrar, NO tiendas.
+IMPORTANTE: Los codigos SKU Mattel son combinaciones cortas de letras y numeros como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
+La palabra "stock" NO es un producto.
 
 Ejemplos:
-- "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
-- "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
-- "Venta insolita Paris Oeste" → cliente=paris, tienda=oeste, producto=venta insolita
-- "Spinner Falabella Centro" → cliente=falabella, tienda=centro, producto=spinner
-- "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
+- "C4982 Walmart Vitacura" -> cliente=walmart, tienda=vitacura, producto=C4982
+- "Barbie Ripley Los Dominicos" -> cliente=ripley, tienda=los dominicos, producto=barbie
+- "Falabella Parque Arauco" -> cliente=falabella, tienda=parque arauco, producto=null
+- "Venta insolita Paris Oeste" -> cliente=paris, tienda=oeste, producto=venta insolita
 
 Responde SOLO con JSON:
-{{"cliente":"...","tienda":"...","producto":null}}
-o {{"error":"no entendi"}}
+{"cliente":"...","tienda":"...","producto":null}
+o {"error":"no entendi"}
 """
 
 def parse_query(msg: str) -> dict:
@@ -149,29 +169,34 @@ def parse_query(msg: str) -> dict:
         )
         return json.loads(resp.content[0].text.strip())
     except Exception as e:
-        log.warning("Claude API fallo: %s — usando parseo simple", e)
+        log.warning("Claude API fallo: %s - usando parseo simple", e)
         return parse_simple(msg)
 
 def parse_simple(msg: str) -> dict:
     """Parseo de respaldo sin API."""
     lower = msg.lower()
+
     for w in PALABRAS_IGNORAR:
         lower = lower.replace(w, " ")
     lower = " ".join(lower.split())
+
     cliente = None
     for c in CLIENTES_VALIDOS:
         if c in lower:
             cliente = c.capitalize()
             lower = lower.replace(c, " ").strip()
             break
+
     if not cliente:
         return {"error": "no entendi"}
+
     sku_candidate = None
     sku_match = SKU_RE.search(lower)
     if sku_match:
         sku_candidate = sku_match.group(1).upper()
         lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
         lower = " ".join(lower.split())
+
     TIENDAS = [
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
         "plaza vespucio", "florida center", "plaza oeste", "plaza egana",
@@ -179,7 +204,7 @@ def parse_simple(msg: str) -> dict:
         "la reina", "las condes", "la serena", "barros arana",
         "marina arauco", "arauco maipu", "paseo estacion", "plaza trebol",
         "portal belloto", "portal osorno", "portal temuco", "portal nunoa",
-        "el llano", "el roble", "plaza vespucio",
+        "el llano", "el roble",
         "costanera", "vespucio", "florida", "egana", "maipu", "quilicura",
         "rancagua", "antofagasta", "concepcion", "iquique", "temuco",
         "valdivia", "valparaiso", "huerfanos", "astor", "arica", "chillan",
@@ -187,12 +212,12 @@ def parse_simple(msg: str) -> dict:
         "pudahuel", "cerrillos", "bandera", "lyon", "huechuraba", "quilin",
         "independencia", "quilpue", "quillota", "talcahuano", "coronel",
         "curico", "melipilla", "ovalle", "calama", "renca", "dehesa",
-        "barnechea", "macul", "tobalaba", "maipú", "ñuñoa", "concon",
+        "barnechea", "macul", "tobalaba", "concon",
         "linares", "talca", "osorno", "angol", "villarrica", "frutillar",
         "punta arenas", "buin", "talagante", "penaflor", "colina", "lampa",
         "alameda", "vicuna", "mackenna", "apoquindo", "irarrazaval",
         "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
-        "cisterna", "peñalolen", "peñaflor", "centro", "oeste", "oriente", "norte", "sur",
+        "cisterna", "centro", "oeste", "oriente", "norte", "sur",
     ]
     tienda = None
     for t in TIENDAS:
@@ -200,6 +225,7 @@ def parse_simple(msg: str) -> dict:
             tienda = t.title()
             lower = lower.replace(t, " ").strip()
             break
+
     if not tienda:
         MARCAS = {
             "barbie", "reco", "hot", "wheels", "thomas", "train", "fisher",
@@ -210,7 +236,9 @@ def parse_simple(msg: str) -> dict:
         palabras = lower.split()
         if not palabras:
             return {"error": "no entendi"}
+
         tiene_marca = any(p in MARCAS for p in palabras)
+
         if not tiene_marca:
             tienda = " ".join(palabras).title()
             lower = ""
@@ -227,26 +255,27 @@ def parse_simple(msg: str) -> dict:
             else:
                 tienda = palabras[-1].title()
                 lower = " ".join(palabras[:-1])
+
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
     if not producto and sku_candidate:
         producto = sku_candidate
+
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 HELP_MSG = (
     "Hola! Soy el asistente de stock.\n\n"
     "Escribe algo como:\n"
     "- _Ripley Los Dominicos_\n"
     "- _Falabella Parque Arauco_\n"
-    "- _Venta Insolita Paris Oeste_\n\n"
-    "Clientes: Falabella, Ripley, Paris, Jumbo, Tottus, Walmart"
+    "- _Barbie Ripley Costanera_\n\n"
+    "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
 )
 
 def twiml(resp):
+    """Retorna TwiML con charset UTF-8 explicito."""
     return str(resp), 200, {'Content-Type': 'text/xml; charset=utf-8'}
 
 
@@ -255,47 +284,59 @@ def whatsapp():
     sender = request.form.get("From", "")
     incoming = request.form.get("Body", "").strip()
     log.info("De %s: %s", sender, incoming)
+
     resp = MessagingResponse()
+
     if sender not in NUMEROS_AUTORIZADOS:
         return twiml(resp)
+
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
         return twiml(resp)
+
     parsed = parse_query(incoming)
     log.info("Parsed: %s", parsed)
+
     if "error" in parsed:
         resp.message("No entendi\nEscribe por ejemplo:\nRipley Los Dominicos")
         return twiml(resp)
+
     cliente = parsed.get("cliente", "").strip()
     tienda = parsed.get("tienda", "").strip()
     producto = parsed.get("producto")
     if producto and producto.lower() in PALABRAS_IGNORAR:
         producto = None
+
     try:
         results = consultar_stock(cliente, tienda, producto)
     except Exception as e:
         log.error("Error consultando stock: %s", e)
         resp.message("Error leyendo el archivo. Intenta de nuevo.")
         return twiml(resp)
+
     resp.message(format_respuesta(cliente, tienda, producto, results))
     return twiml(resp)
 
 
 @app.route("/test")
 def test():
+    """Endpoint para probar sin WhatsApp."""
     msg = request.args.get("msg", "Ripley Los Dominicos")
     parsed = parse_query(msg)
     if "error" in parsed:
         return {"error": "No se pudo parsear", "msg": msg}
+
     cliente = parsed.get("cliente", "")
     tienda = parsed.get("tienda", "")
     producto = parsed.get("producto")
     if producto and producto.lower() in PALABRAS_IGNORAR:
         producto = None
+
     try:
         results = consultar_stock(cliente, tienda, producto)
     except Exception as e:
         return {"error": str(e)}
+
     return {
         "parsed": parsed,
         "producto_final": producto,
@@ -307,10 +348,11 @@ def test():
 
 @app.route("/reload")
 def reload_data():
+    """Limpia el cache para forzar descarga del archivo actualizado."""
     _cache["data"] = None
     url_activa = DROPBOX_URL[:60] + "..."
-    log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
-    return {"status": "ok", "mensaje": "Cache limpiado. El archivo se descargara en la proxima consulta.", "url": url_activa}, 200
+    log.info("Cache limpiado.")
+    return {"status": "ok", "mensaje": "Cache limpiado.", "url": url_activa}, 200
 
 
 @app.route("/health")
