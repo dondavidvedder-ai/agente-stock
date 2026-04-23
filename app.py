@@ -120,14 +120,16 @@ SYSTEM_PARSE = f"""
 Extrae del mensaje del usuario:
 - cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
 - tienda: nombre de tienda (obligatorio)
-- producto: marca, nombre de producto, o código SKU Mattel (opcional, null si no se menciona)
+- producto: marca, nombre de producto, actividad o código SKU Mattel (opcional, null si no se menciona)
 
 IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
 La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
+Nombres de actividades/promociones como "Venta Insólita", "Cyber", "Black Friday" son PRODUCTOS a filtrar, NO tiendas.
 
 Ejemplos:
 - "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
 - "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
+- "Venta insolita Paris Oeste" → cliente=paris, tienda=oeste, producto=venta insolita
 - "Spinner Falabella Centro" → cliente=falabella, tienda=centro, producto=spinner
 - "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
 
@@ -190,7 +192,7 @@ def parse_simple(msg: str) -> dict:
         "punta arenas", "buin", "talagante", "penaflor", "colina", "lampa",
         "alameda", "vicuna", "mackenna", "apoquindo", "irarrazaval",
         "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
-        "cisterna", "peñalolen", "peñaflor", "centro",
+        "cisterna", "peñalolen", "peñaflor", "centro", "oeste", "oriente", "norte", "sur",
     ]
     tienda = None
     for t in TIENDAS:
@@ -240,8 +242,8 @@ HELP_MSG = (
     "Escribe algo como:\n"
     "- _Ripley Los Dominicos_\n"
     "- _Falabella Parque Arauco_\n"
-    "- _Barbie Ripley Costanera_\n\n"
-    "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
+    "- _Venta Insolita Paris Oeste_\n\n"
+    "Clientes: Falabella, Ripley, Paris, Jumbo, Tottus, Walmart"
 )
 
 def twiml(resp):
