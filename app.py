@@ -20,6 +20,8 @@ app = Flask(__name__)
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 
+# UN solo archivo con todos los clientes
+# Actualiza STOCK_URL en Railway cada semana sin tocar el código
 DROPBOX_URL = os.environ.get(
     "STOCK_URL",
     "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
@@ -38,6 +40,7 @@ NUMEROS_AUTORIZADOS = {
 CLIENTES_VALIDOS = {"falabella", "ripley", "paris", "jumbo", "tottus", "walmart"}
 PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "dame", "hay"}
 
+# Patrón para detectar códigos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
 SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
 _cache = {"data": None}
@@ -54,12 +57,14 @@ def get_dataframe():
     _cache["data"] = df
     return df
 
-def consultar_stock(cliente: str, tienda: str, producto) -> list:
+def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
     """Filtra el DataFrame por cliente, tienda y producto opcional."""
     df = get_dataframe()
 
+    # Filtrar por cliente
     mask_c = df["Cliente"].str.lower() == cliente.lower()
 
+    # Filtrar por tienda (cualquier palabra)
     mask_t = pd.Series([False] * len(df), index=df.index)
     for word in tienda.lower().split():
         if len(word) > 2:
@@ -72,6 +77,7 @@ def consultar_stock(cliente: str, tienda: str, producto) -> list:
         log.info(f"Sin resultados para {cliente}/{tienda}. Tiendas disponibles: {list(tiendas_disponibles)}")
         return []
 
+    # Filtrar por producto si se especificó
     if producto:
         mask_prod = (
             filtered["Descripcion producto"].str.upper().str.contains(producto.upper(), na=False) |
@@ -101,9 +107,11 @@ def consultar_stock(cliente: str, tienda: str, producto) -> list:
             "venta": venta,
         })
 
+    # Si hay producto específico: mostrar TODOS los resultados
     if producto:
         return results
 
+    # Si NO hay producto: ordenar por stock descendente y devolver TOP 50
     results.sort(key=lambda x: x["stock"], reverse=True)
     return results[:50]
 
@@ -126,6 +134,7 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
 
     lineas = [header]
 
+    # Mostrar primeros 20 o todos si son pocos
     max_display = min(20, len(results))
     for r in results[:max_display]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
@@ -138,24 +147,27 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     return "\n".join(lineas)
 
 
-SYSTEM_PARSE = """
-Extrae del mensaje del usuario:
-- cliente: uno de [falabella, jumbo, paris, ripley, tottus, walmart] (obligatorio)
-- tienda: nombre de tienda (obligatorio)
-- producto: marca, nombre de producto, o codigo SKU Mattel (opcional, null si no se menciona)
+# ── Parser con Claude ──────────────────────────────────────────────────────────
 
-IMPORTANTE: Los codigos SKU Mattel son combinaciones cortas de letras y numeros como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
-La palabra "stock" NO es un producto.
+SYSTEM_PARSE = f"""
+Extrae del mensaje del usuario:
+- cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
+- tienda: nombre de tienda (obligatorio)
+- producto: marca, nombre de producto, o código SKU Mattel (opcional, null si no se menciona)
+
+IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
+La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
 
 Ejemplos:
-- "C4982 Walmart Vitacura" -> cliente=walmart, tienda=vitacura, producto=C4982
-- "Barbie Ripley Los Dominicos" -> cliente=ripley, tienda=los dominicos, producto=barbie
-- "Falabella Parque Arauco" -> cliente=falabella, tienda=parque arauco, producto=null
-- "Venta insolita Paris Oeste" -> cliente=paris, tienda=oeste, producto=venta insolita
+- "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
+- "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
+- "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
+- "Ripley Plaza" → cliente=ripley, tienda=plaza, producto=null
+- "Ripley Oeste" → cliente=ripley, tienda=oeste, producto=null
 
 Responde SOLO con JSON:
-{"cliente":"...","tienda":"...","producto":null}
-o {"error":"no entendi"}
+{{"cliente":"...","tienda":"...","producto":null}}
+o {{"error":"no entendi"}}
 """
 
 def parse_query(msg: str) -> dict:
@@ -167,19 +179,25 @@ def parse_query(msg: str) -> dict:
             system=SYSTEM_PARSE,
             messages=[{"role": "user", "content": msg}],
         )
-        return json.loads(resp.content[0].text.strip())
+        result = json.loads(resp.content[0].text.strip())
+        if "error" in result:
+            log.warning("Claude devolvio error para '%s', intentando parseo simple", msg)
+            return parse_simple(msg)
+        return result
     except Exception as e:
-        log.warning("Claude API fallo: %s - usando parseo simple", e)
+        log.warning("Claude API fallo: %s — usando parseo simple", e)
         return parse_simple(msg)
 
 def parse_simple(msg: str) -> dict:
     """Parseo de respaldo sin API."""
     lower = msg.lower()
 
+    # Eliminar palabras a ignorar
     for w in PALABRAS_IGNORAR:
         lower = lower.replace(w, " ")
-    lower = " ".join(lower.split())
+    lower = " ".join(lower.split())  # normalizar espacios
 
+    # Detectar cliente
     cliente = None
     for c in CLIENTES_VALIDOS:
         if c in lower:
@@ -190,6 +208,7 @@ def parse_simple(msg: str) -> dict:
     if not cliente:
         return {"error": "no entendi"}
 
+    # Detectar SKU Mattel antes de todo (ej: C4982, DXV29, HRJ78)
     sku_candidate = None
     sku_match = SKU_RE.search(lower)
     if sku_match:
@@ -197,14 +216,17 @@ def parse_simple(msg: str) -> dict:
         lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
         lower = " ".join(lower.split())
 
+    # Detectar tiendas conocidas (frases multi-palabra primero, luego palabras sueltas)
     TIENDAS = [
+        # frases multi-palabra (van primero para que no se partan)
         "los dominicos", "parque arauco", "alto las condes", "costanera center",
         "plaza vespucio", "florida center", "plaza oeste", "plaza egana",
         "san bernardo", "puerto montt", "puente alto", "la florida",
         "la reina", "las condes", "la serena", "barros arana",
         "marina arauco", "arauco maipu", "paseo estacion", "plaza trebol",
         "portal belloto", "portal osorno", "portal temuco", "portal nunoa",
-        "el llano", "el roble",
+        "el llano", "el roble", "plaza vespucio",
+        # palabras sueltas (ciudades, barrios, sectores)
         "costanera", "vespucio", "florida", "egana", "maipu", "quilicura",
         "rancagua", "antofagasta", "concepcion", "iquique", "temuco",
         "valdivia", "valparaiso", "huerfanos", "astor", "arica", "chillan",
@@ -212,12 +234,12 @@ def parse_simple(msg: str) -> dict:
         "pudahuel", "cerrillos", "bandera", "lyon", "huechuraba", "quilin",
         "independencia", "quilpue", "quillota", "talcahuano", "coronel",
         "curico", "melipilla", "ovalle", "calama", "renca", "dehesa",
-        "barnechea", "macul", "tobalaba", "concon",
+        "barnechea", "macul", "tobalaba", "maipú", "ñuñoa", "concon",
         "linares", "talca", "osorno", "angol", "villarrica", "frutillar",
         "punta arenas", "buin", "talagante", "penaflor", "colina", "lampa",
         "alameda", "vicuna", "mackenna", "apoquindo", "irarrazaval",
         "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
-        "cisterna", "centro", "oeste", "oriente", "norte", "sur",
+        "cisterna", "peñalolen", "peñaflor", "centro", "oeste", "oriente", "norte", "sur", "plaza",
     ]
     tienda = None
     for t in TIENDAS:
@@ -227,6 +249,8 @@ def parse_simple(msg: str) -> dict:
             break
 
     if not tienda:
+        # Heuristica: estructura tipica es [producto] [tienda]
+        # Si el texto no contiene palabras de marca/producto → todo es tienda
         MARCAS = {
             "barbie", "reco", "hot", "wheels", "thomas", "train", "fisher",
             "price", "mega", "uno", "mario", "kart", "disney", "pixar",
@@ -240,6 +264,7 @@ def parse_simple(msg: str) -> dict:
         tiene_marca = any(p in MARCAS for p in palabras)
 
         if not tiene_marca:
+            # Sin marca = todo el texto restante es el nombre de la tienda
             tienda = " ".join(palabras).title()
             lower = ""
         elif len(palabras) == 1:
@@ -249,6 +274,7 @@ def parse_simple(msg: str) -> dict:
             tienda = palabras[-1].title()
             lower = " ".join(palabras[:-1])
         else:
+            # Con marca: producto al inicio, tienda al final
             if len(palabras[-1]) < 4:
                 tienda = " ".join(palabras[-2:]).title()
                 lower = " ".join(palabras[:-2])
@@ -259,11 +285,14 @@ def parse_simple(msg: str) -> dict:
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
+    # Si no hay otro producto pero si habia un SKU, usarlo como producto
     if not producto and sku_candidate:
         producto = sku_candidate
 
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
 
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 HELP_MSG = (
     "Hola! Soy el asistente de stock.\n\n"
@@ -275,7 +304,7 @@ HELP_MSG = (
 )
 
 def twiml(resp):
-    """Retorna TwiML con charset UTF-8 explicito."""
+    """Retorna TwiML con charset UTF-8 explícito para evitar encoding roto."""
     return str(resp), 200, {'Content-Type': 'text/xml; charset=utf-8'}
 
 
@@ -320,7 +349,7 @@ def whatsapp():
 
 @app.route("/test")
 def test():
-    """Endpoint para probar sin WhatsApp."""
+    """Endpoint para probar sin WhatsApp. Ej: /test?msg=Ripley+Los+Dominicos"""
     msg = request.args.get("msg", "Ripley Los Dominicos")
     parsed = parse_query(msg)
     if "error" in parsed:
@@ -348,11 +377,11 @@ def test():
 
 @app.route("/reload")
 def reload_data():
-    """Limpia el cache para forzar descarga del archivo actualizado."""
+    """Limpia el cache para forzar descarga del archivo actualizado desde Dropbox."""
     _cache["data"] = None
     url_activa = DROPBOX_URL[:60] + "..."
-    log.info("Cache limpiado.")
-    return {"status": "ok", "mensaje": "Cache limpiado.", "url": url_activa}, 200
+    log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
+    return {"status": "ok", "mensaje": "Cache limpiado. El archivo se descargara en la proxima consulta.", "url": url_activa}, 200
 
 
 @app.route("/health")
