@@ -86,10 +86,6 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
         )
         if "Actividad" in filtered.columns:
-            mask_prod |= filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False) |
-            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
-        )
-        if "Actividad" in filtered.columns:
             mask_prod |= filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
         filtered = filtered[mask_prod]
 
