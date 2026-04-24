@@ -86,6 +86,10 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
         )
         if "Actividad" in filtered.columns:
+            mask_prod |= filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False) |
+            filtered["descuento"].str.upper().str.contains(producto.upper(), na=False)
+        )
+        if "Actividad" in filtered.columns:
             mask_prod |= filtered["Actividad"].str.upper().str.contains(producto.upper(), na=False)
         filtered = filtered[mask_prod]
 
@@ -134,20 +138,21 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
 
     lineas = [header]
 
-    # Mostrar primeros 20 o todos si son pocos
-    max_display = min(20, len(results))
+    # Mostrar primeros 10 (limite sandbox Twilio ~1600 chars)
+    max_display = min(10, len(results))
     for r in results[:max_display]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
-        lineas.append(f"{estado} {r['descripcion']}")
-        lineas.append(f"   SKU: {r['sku_mattel']} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
+        desc = r['descripcion'].strip()
+        lineas.append(f"{estado} {desc}")
+        lineas.append(f"   SKU: {r['sku_mattel'].strip()} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
 
     if len(results) > max_display:
-        lineas.append(f"\n_...y {len(results)-max_display} mas_")
+        lineas.append(f"\n_...y {len(results)-max_display} mas. Busca por producto para filtrar._")
 
     return "\n".join(lineas)
 
 
-# ── Parser con Claude ──────────────────────────────────────────────────────────
+# \u2500\u2500 Parser con Claude \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 SYSTEM_PARSE = f"""
 Extrae del mensaje del usuario:
@@ -159,7 +164,7 @@ IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y número
 La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
 
 Ejemplos:
-- "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
+- "C4982 Walmart Vitacura" \u2192 clienente=walmart, tienda=vitacura, producto=C4982
 - "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
 - "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
 - "Ripley Plaza" → cliente=ripley, tienda=plaza, producto=null
