@@ -76,11 +76,28 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
     # Filtrar por cliente
     mask_c = df["Cliente"].str.lower() == cliente.lower()
 
-    # Filtrar por tienda (cualquier palabra)
-    mask_t = pd.Series([False] * len(df), index=df.index)
-    for word in tienda.lower().split():
-        if len(word) > 2:
-            mask_t |= df["Nombre Tienda"].str.lower().str.contains(word, na=False, regex=False)
+    # Filtrar por tienda — 3 niveles para evitar falsos positivos
+    # (ej: "puente nuevo" no debe matchear "PUENTE ALTO")
+    tienda_low = tienda.lower().strip()
+    nombres = df["Nombre Tienda"].str.lower()
+
+    # Nivel 1: substring exacto de la frase completa
+    mask_t = nombres.str.contains(tienda_low, na=False, regex=False)
+
+    # Nivel 2: AND — la tienda debe contener TODAS las palabras (>2 chars)
+    if not (mask_c & mask_t).any():
+        words = [w for w in tienda_low.split() if len(w) > 2]
+        if words:
+            mask_t = pd.Series([True] * len(df), index=df.index)
+            for w in words:
+                mask_t &= nombres.str.contains(w, na=False, regex=False)
+
+    # Nivel 3: OR — cualquier palabra (fallback original)
+    if not (mask_c & mask_t).any():
+        mask_t = pd.Series([False] * len(df), index=df.index)
+        for w in tienda_low.split():
+            if len(w) > 2:
+                mask_t |= nombres.str.contains(w, na=False, regex=False)
 
     filtered = df[mask_c & mask_t]
 
