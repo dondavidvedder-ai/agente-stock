@@ -43,7 +43,7 @@ PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar
 # Patrón para detectar códigos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
 SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
-_cache = {"data": None}
+_cache = {"data": None, "tiendas": [], "actividades": []}
 
 def get_dataframe():
     """Descarga el archivo de Dropbox (o usa cache)."""
@@ -55,6 +55,18 @@ def get_dataframe():
     df = pd.read_excel(io.BytesIO(resp.content), sheet_name="base", header=0)
     log.info(f"Archivo cargado: {len(df)} filas")
     _cache["data"] = df
+
+    # Tiendas únicas (lowercase, ordenadas por longitud desc para longest-match)
+    tiendas = df["Nombre Tienda"].dropna().astype(str).str.strip().str.lower().unique().tolist()
+    _cache["tiendas"] = sorted([t for t in tiendas if t], key=len, reverse=True)
+
+    # Actividades únicas (si la columna existe)
+    if "Actividad" in df.columns:
+        acts = df["Actividad"].dropna().astype(str).str.strip().str.lower().unique().tolist()
+        _cache["actividades"] = sorted([a for a in acts if a], key=len, reverse=True)
+    else:
+        _cache["actividades"] = []
+    log.info(f"Tiendas cacheadas: {len(_cache['tiendas'])} | Actividades: {_cache['actividades']}")
     return df
 
 def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
@@ -148,23 +160,32 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
     return "\n".join(lineas)
 
 
-# \u2500\u2500 Parser con Claude \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ── Parser con Claude ──────────────────────────────────────────────────────────
 
-SYSTEM_PARSE = f"""
+def get_system_parse() -> str:
+    """Construye el system prompt inyectando las actividades vigentes del Excel."""
+    actividades = _cache.get("actividades", [])
+    activs_str = ", ".join(sorted(actividades)) if actividades else "(no disponibles)"
+    return f"""
 Extrae del mensaje del usuario:
 - cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
-- tienda: nombre de tienda (obligatorio)
-- producto: marca, nombre de producto, o código SKU Mattel (opcional, null si no se menciona)
+- tienda: nombre de tienda (obligatorio, puede ser compuesto como "Puente Nuevo", "La Serena", "Plaza Vespucio")
+- producto: marca, nombre de producto, código SKU Mattel, o tipo de ACTIVIDAD (opcional, null si no se menciona)
 
-IMPORTANTE: Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
-La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
+ACTIVIDADES válidas (categorías especiales — si aparecen en el mensaje van en `producto`): {activs_str}
+
+IMPORTANTE:
+- Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
+- La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
+- Si el mensaje contiene una palabra de la lista de ACTIVIDADES (ej: "collector", "motu", "ts5", "dream days"), ESA palabra va en `producto`.
 
 Ejemplos:
-- "C4982 Walmart Vitacura" \u2192 clienente=walmart, tienda=vitacura, producto=C4982
+- "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
 - "Barbie Ripley Los Dominicos" → cliente=ripley, tienda=los dominicos, producto=barbie
 - "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
+- "Collector Walmart Puente Nuevo" → cliente=walmart, tienda=puente nuevo, producto=collector
+- "Mario Kart Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=mario kart
 - "Ripley Plaza" → cliente=ripley, tienda=plaza, producto=null
-- "Ripley Oeste" → cliente=ripley, tienda=oeste, producto=null
 
 Responde SOLO con JSON:
 {{"cliente":"...","tienda":"...","producto":null}}
@@ -173,11 +194,12 @@ o {{"error":"no entendi"}}
 
 def parse_query(msg: str) -> dict:
     try:
+        get_dataframe()  # asegura que el cache de actividades esté poblado
         ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         resp = ac.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=100,
-            system=SYSTEM_PARSE,
+            system=get_system_parse(),
             messages=[{"role": "user", "content": msg}],
         )
         result = json.loads(resp.content[0].text.strip())
@@ -191,6 +213,14 @@ def parse_query(msg: str) -> dict:
 
 def parse_simple(msg: str) -> dict:
     """Parseo de respaldo sin API."""
+    # Cargar cache para tener tiendas y actividades disponibles
+    try:
+        get_dataframe()
+    except Exception as e:
+        log.warning("parse_simple: no se pudo precargar Excel (%s) — sigo sin listas dinámicas", e)
+    tiendas_dyn = _cache.get("tiendas", [])
+    actividades = _cache.get("actividades", [])
+
     lower = msg.lower()
 
     # Eliminar palabras a ignorar
@@ -209,6 +239,15 @@ def parse_simple(msg: str) -> dict:
     if not cliente:
         return {"error": "no entendi"}
 
+    # Detectar actividad (collector, motu, ts5, etc.) — va en `producto`
+    actividad_match = None
+    for a in actividades:
+        if re.search(rf'\b{re.escape(a)}\b', lower):
+            actividad_match = a
+            lower = re.sub(rf'\b{re.escape(a)}\b', ' ', lower)
+            lower = " ".join(lower.split())
+            break
+
     # Detectar SKU Mattel antes de todo (ej: C4982, DXV29, HRJ78)
     sku_candidate = None
     sku_match = SKU_RE.search(lower)
@@ -216,6 +255,15 @@ def parse_simple(msg: str) -> dict:
         sku_candidate = sku_match.group(1).upper()
         lower = lower[:sku_match.start()] + " " + lower[sku_match.end():]
         lower = " ".join(lower.split())
+
+    # Detectar tienda usando lista dinámica del Excel (longest-match primero)
+    tienda = None
+    for t in tiendas_dyn:
+        if t and t in lower:
+            tienda = t.title()
+            lower = lower.replace(t, " ").strip()
+            lower = " ".join(lower.split())
+            break
 
     # Detectar tiendas conocidas (frases multi-palabra primero, luego palabras sueltas)
     TIENDAS = [
@@ -242,12 +290,12 @@ def parse_simple(msg: str) -> dict:
         "kennedy", "grecia", "vivaceta", "carrascal", "quinta normal",
         "cisterna", "peñalolen", "peñaflor", "centro", "oeste", "oriente", "norte", "sur", "plaza",
     ]
-    tienda = None
-    for t in TIENDAS:
-        if t in lower:
-            tienda = t.title()
-            lower = lower.replace(t, " ").strip()
-            break
+    if not tienda:
+        for t in TIENDAS:
+            if t in lower:
+                tienda = t.title()
+                lower = lower.replace(t, " ").strip()
+                break
 
     if not tienda:
         # Heuristica: estructura tipica es [producto] [tienda]
@@ -286,8 +334,10 @@ def parse_simple(msg: str) -> dict:
     producto = lower.strip() if lower.strip() else None
     if producto and producto in PALABRAS_IGNORAR:
         producto = None
-    # Si no hay otro producto pero si habia un SKU, usarlo como producto
-    if not producto and sku_candidate:
+    # Prioridad: actividad detectada > SKU > resto del texto
+    if actividad_match:
+        producto = actividad_match
+    elif not producto and sku_candidate:
         producto = sku_candidate
 
     return {"cliente": cliente, "tienda": tienda, "producto": producto}
@@ -380,6 +430,8 @@ def test():
 def reload_data():
     """Limpia el cache para forzar descarga del archivo actualizado desde Dropbox."""
     _cache["data"] = None
+    _cache["tiendas"] = []
+    _cache["actividades"] = []
     url_activa = DROPBOX_URL[:60] + "..."
     log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
     return {"status": "ok", "mensaje": "Cache limpiado. El archivo se descargara en la proxima consulta.", "url": url_activa}, 200
