@@ -144,18 +144,30 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
         header += f" \u00b7 _{producto}_"
     header += "\n"
 
-    lineas = [header]
-
-    # Mostrar primeros 10 (limite sandbox Twilio ~1600 chars)
-    max_display = min(10, len(results))
-    for r in results[:max_display]:
+    # Mostrar hasta 20 productos, pero cortando antes si excede ~1500 chars
+    # (limite Twilio sandbox ~1600 \u2014 dejamos margen para footer)
+    MAX_ITEMS = 20
+    CHAR_BUDGET = 1500
+    body_lines = []
+    chars_used = len(header)
+    shown = 0
+    for r in results[:MAX_ITEMS]:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         desc = r['descripcion'].strip()
-        lineas.append(f"{estado} {desc}")
-        lineas.append(f"   SKU: {r['sku_mattel'].strip()} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}")
+        l1 = f"{estado} {desc}"
+        l2 = f"   SKU: {r['sku_mattel'].strip()} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}"
+        extra = len(l1) + len(l2) + 2  # +2 por los \n
+        if chars_used + extra > CHAR_BUDGET:
+            break
+        body_lines.append(l1)
+        body_lines.append(l2)
+        chars_used += extra
+        shown += 1
 
-    if len(results) > max_display:
-        lineas.append(f"\n_...y {len(results)-max_display} mas. Busca por producto para filtrar._")
+    lineas = [header] + body_lines
+
+    if len(results) > shown:
+        lineas.append(f"\n_...y {len(results)-shown} mas. Busca por producto para filtrar._")
 
     return "\n".join(lineas)
 
