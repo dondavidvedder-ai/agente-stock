@@ -43,7 +43,7 @@ PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar
 # Patrón para detectar códigos SKU Mattel (ej: C4982, DXV29, HRJ78, W2085)
 SKU_RE = re.compile(r'\b([A-Z]{1,3}\d{3,6}[A-Z]?\d?)\b', re.IGNORECASE)
 
-_cache = {"data": None, "tiendas": [], "actividades": []}
+_cache = {"data": None, "tiendas": [], "actividades": [], "descuentos": []}
 
 def get_dataframe():
     """Descarga el archivo de Dropbox (o usa cache)."""
@@ -66,7 +66,15 @@ def get_dataframe():
         _cache["actividades"] = sorted([a for a in acts if a], key=len, reverse=True)
     else:
         _cache["actividades"] = []
-    log.info(f"Tiendas cacheadas: {len(_cache['tiendas'])} | Actividades: {_cache['actividades']}")
+
+    # Descuentos/promociones únicas (si la columna existe)
+    if "descuento" in df.columns:
+        descs = df["descuento"].dropna().astype(str).str.strip().str.lower().unique().tolist()
+        _cache["descuentos"] = sorted([d for d in descs if d], key=len, reverse=True)
+    else:
+        _cache["descuentos"] = []
+
+    log.info(f"Tiendas cacheadas: {len(_cache['tiendas'])} | Actividades: {_cache['actividades']} | Descuentos: {_cache['descuentos']}")
     return df
 
 def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
@@ -192,21 +200,25 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
 # ── Parser con Claude ──────────────────────────────────────────────────────────
 
 def get_system_parse() -> str:
-    """Construye el system prompt inyectando las actividades vigentes del Excel."""
+    """Construye el system prompt inyectando actividades y descuentos vigentes del Excel."""
     actividades = _cache.get("actividades", [])
+    descuentos = _cache.get("descuentos", [])
     activs_str = ", ".join(sorted(actividades)) if actividades else "(no disponibles)"
+    descs_str = ", ".join(sorted(descuentos)) if descuentos else "(no disponibles)"
     return f"""
 Extrae del mensaje del usuario:
 - cliente: uno de {sorted(CLIENTES_VALIDOS)} (obligatorio)
 - tienda: nombre de tienda (obligatorio, puede ser compuesto como "Puente Nuevo", "La Serena", "Plaza Vespucio")
-- producto: marca, nombre de producto, código SKU Mattel, o tipo de ACTIVIDAD (opcional, null si no se menciona)
+- producto: marca, nombre de producto, código SKU Mattel, tipo de ACTIVIDAD, o tipo de PROMOCIÓN/DESCUENTO (opcional, null si no se menciona)
 
-ACTIVIDADES válidas (categorías especiales — si aparecen en el mensaje van en `producto`): {activs_str}
+ACTIVIDADES válidas (si aparecen en el mensaje van en `producto`): {activs_str}
+
+PROMOCIONES/DESCUENTOS válidos (si aparecen en el mensaje van en `producto`): {descs_str}
 
 IMPORTANTE:
 - Los códigos SKU Mattel son combinaciones cortas de letras y números como C4982, DXV29, HRJ78, W2085, K5904. Son PRODUCTOS, NO tiendas.
 - La palabra "stock" NO es un producto. Es solo una palabra de solicitud.
-- Si el mensaje contiene una palabra de la lista de ACTIVIDADES (ej: "collector", "motu", "ts5", "dream days"), ESA palabra va en `producto`.
+- Si el mensaje contiene una palabra de la lista de ACTIVIDADES o PROMOCIONES (ej: "collector", "motu", "venta insolita"), ESA palabra/frase va en `producto`.
 
 Ejemplos:
 - "C4982 Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=C4982
@@ -214,6 +226,7 @@ Ejemplos:
 - "Falabella Parque Arauco" → cliente=falabella, tienda=parque arauco, producto=null
 - "Collector Walmart Puente Nuevo" → cliente=walmart, tienda=puente nuevo, producto=collector
 - "Mario Kart Walmart Vitacura" → cliente=walmart, tienda=vitacura, producto=mario kart
+- "Venta Insolita Jumbo Concha y Toro" → cliente=jumbo, tienda=concha y toro, producto=venta insolita
 - "Ripley Plaza" → cliente=ripley, tienda=plaza, producto=null
 
 Responde SOLO con JSON:
@@ -249,6 +262,9 @@ def parse_simple(msg: str) -> dict:
         log.warning("parse_simple: no se pudo precargar Excel (%s) — sigo sin listas dinámicas", e)
     tiendas_dyn = _cache.get("tiendas", [])
     actividades = _cache.get("actividades", [])
+    descuentos = _cache.get("descuentos", [])
+    # Combinamos actividades y descuentos: ambos se matchean como "producto categoría"
+    categorias = sorted(set(actividades) | set(descuentos), key=len, reverse=True)
 
     lower = msg.lower()
 
@@ -268,9 +284,10 @@ def parse_simple(msg: str) -> dict:
     if not cliente:
         return {"error": "no entendi"}
 
-    # Detectar actividad (collector, motu, ts5, etc.) — va en `producto`
+    # Detectar actividad o descuento (collector, motu, ts5, venta insolita, etc.)
+    # → van en `producto`. Longest-match primero para frases multi-palabra.
     actividad_match = None
-    for a in actividades:
+    for a in categorias:
         if re.search(rf'\b{re.escape(a)}\b', lower):
             actividad_match = a
             lower = re.sub(rf'\b{re.escape(a)}\b', ' ', lower)
@@ -461,6 +478,7 @@ def reload_data():
     _cache["data"] = None
     _cache["tiendas"] = []
     _cache["actividades"] = []
+    _cache["descuentos"] = []
     url_activa = DROPBOX_URL[:60] + "..."
     log.info("Cache limpiado. Proxima consulta descargara el archivo nuevo.")
     return {"status": "ok", "mensaje": "Cache limpiado. El archivo se descargara en la proxima consulta.", "url": url_activa}, 200
@@ -481,6 +499,7 @@ def actividades():
         return {"error": str(e)}, 500
     return {
         "actividades": _cache.get("actividades", []),
+        "descuentos": _cache.get("descuentos", []),
         "total_tiendas": len(_cache.get("tiendas", [])),
     }, 200
 
