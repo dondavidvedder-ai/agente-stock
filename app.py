@@ -234,6 +234,30 @@ Responde SOLO con JSON:
 o {{"error":"no entendi"}}
 """
 
+def _normalize_categoria(parsed: dict) -> dict:
+    """Si Haiku puso una actividad/descuento adentro del campo `tienda`, moverla a `producto`.
+    Ejemplo: tienda='Venta Insolita Concha' → tienda='Concha', producto='venta insolita'."""
+    if "error" in parsed:
+        return parsed
+    producto = parsed.get("producto")
+    tienda = (parsed.get("tienda") or "").lower()
+    if producto or not tienda:
+        return parsed
+    categorias = sorted(
+        set(_cache.get("actividades", [])) | set(_cache.get("descuentos", [])),
+        key=len, reverse=True
+    )
+    for cat in categorias:
+        if re.search(rf'\b{re.escape(cat)}\b', tienda):
+            new_tienda = re.sub(rf'\b{re.escape(cat)}\b', ' ', tienda)
+            new_tienda = " ".join(new_tienda.split()).title()
+            parsed["tienda"] = new_tienda
+            parsed["producto"] = cat
+            log.info("Post-normalizado: movido '%s' de tienda a producto", cat)
+            break
+    return parsed
+
+
 def parse_query(msg: str) -> dict:
     try:
         get_dataframe()  # asegura que el cache de actividades esté poblado
@@ -248,7 +272,7 @@ def parse_query(msg: str) -> dict:
         if "error" in result:
             log.warning("Claude devolvio error para '%s', intentando parseo simple", msg)
             return parse_simple(msg)
-        return result
+        return _normalize_categoria(result)
     except Exception as e:
         log.warning("Claude API fallo: %s — usando parseo simple", e)
         return parse_simple(msg)
