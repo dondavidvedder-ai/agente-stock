@@ -472,5 +472,18 @@ def health():
     return {"status": "ok", "semana": semana}, 200
 
 
+@app.route("/actividades")
+def actividades():
+    """Devuelve las actividades únicas del Excel cargado (diagnóstico)."""
+    try:
+        get_dataframe()
+    except Exception as e:
+        return {"error": str(e)}, 500
+    return {
+        "actividades": _cache.get("actividades", []),
+        "total_tiendas": len(_cache.get("tiendas", [])),
+    }, 200
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
