@@ -485,5 +485,35 @@ def actividades():
     }, 200
 
 
+@app.route("/debug")
+def debug():
+    """Diagnóstico del Excel: hojas disponibles, columnas, y valores únicos de columnas no-estándar."""
+    try:
+        resp = requests.get(DROPBOX_URL, timeout=30)
+        resp.raise_for_status()
+        xlsx = pd.ExcelFile(io.BytesIO(resp.content))
+        sheets = xlsx.sheet_names
+        df = get_dataframe()
+        cols = list(df.columns)
+        # Para cada columna que NO sea estándar, muestra valores únicos (max 20)
+        STANDARD = {"Cliente", "Cod Tienda", "Nombre Tienda", "Sku Cliente",
+                    "Sku Mattel", "Descripcion producto", "Marca", "Stock",
+                    "Venta", "descuento", "porcentaje descuento", "Actividad"}
+        extra_cols = {}
+        for c in cols:
+            if c not in STANDARD:
+                vals = df[c].dropna().astype(str).str.strip().unique().tolist()
+                extra_cols[c] = vals[:20]
+        return {
+            "hojas": sheets,
+            "hoja_actual": "base",
+            "columnas": cols,
+            "columnas_extra": extra_cols,
+            "filas": len(df),
+        }, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
