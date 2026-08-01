@@ -24,7 +24,7 @@ TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 # Actualiza STOCK_URL en Railway cada semana sin tocar el código
 DROPBOX_URL = os.environ.get(
     "STOCK_URL",
-    "https://www.dropbox.com/scl/fi/aqmm5fxe20il0u06jl0i0/Stock-13.xlsx?rlkey=v3s0ppno2jkkvw1y0mokh3qlv&dl=1"
+    "https://www.dropbox.com/scl/fi/t86yz2horo6njo891h8ny/Stock-30-v5.xlsx?rlkey=ayl3u11megwi6ne7f5iilg60o&dl=1"
 )
 
 NUMEROS_AUTORIZADOS = {
@@ -36,6 +36,24 @@ NUMEROS_AUTORIZADOS = {
     "whatsapp:+56972495007",
     "whatsapp:+56990674664",
 }
+
+# Permisos por zona. None = admin (ve todo Chile).
+# El valor debe coincidir EXACTO con lo que hay en la columna "Zona" del Excel.
+PERMISOS_ZONA = {
+    "whatsapp:+56926121144": None,                     # admin
+    "whatsapp:+56953634351": None,                     # admin
+    "whatsapp:+56972494232": None,                     # admin (visual)
+    "whatsapp:+56997054149": "Juan Carlos Berrios",
+    "whatsapp:+56954077612": "Claudio Berrios",
+    "whatsapp:+56972495007": "Victor Flores",
+    "whatsapp:+56990674664": "Isabel Garcia",
+}
+
+
+def get_zona_for_sender(sender: str) -> str | None:
+    """Devuelve el nombre del supervisor para un sender, o None si es admin
+    (o si no está en el mapa)."""
+    return PERMISOS_ZONA.get(sender)
 
 CLIENTES_VALIDOS = {"falabella", "ripley", "paris", "jumbo", "tottus", "walmart"}
 PALABRAS_IGNORAR = {"stock", "inventario", "consulta", "ver", "buscar", "mostrar", "dame", "hay"}
@@ -84,9 +102,14 @@ def get_dataframe():
     log.info(f"Tiendas cacheadas: {len(_cache['tiendas'])} | Actividades: {_cache['actividades']} | Descuentos: {_cache['descuentos']}")
     return df
 
-def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
-    """Filtra el DataFrame por cliente, tienda y producto opcional."""
+def consultar_stock(cliente: str, tienda: str, producto: str | None, zona: str | None = None) -> list:
+    """Filtra el DataFrame por cliente, tienda y producto opcional.
+    Si zona se pasa, restringe a filas cuya columna "Zona" coincida."""
     df = get_dataframe()
+
+    # Filtro por zona (permisos): se aplica antes que todo lo demas
+    if zona and "Zona" in df.columns:
+        df = df[df["Zona"].astype(str).str.strip().str.lower() == zona.lower().strip()]
 
     # Filtrar por cliente
     mask_c = df["Cliente"].str.lower() == cliente.lower()
@@ -161,17 +184,24 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
     return results[:50]
 
 
-def format_respuesta(cliente, tienda, producto, results) -> str:
+def format_respuesta(cliente, tienda, producto, results, zona: str | None = None) -> str:
     semana = str(date.today().isocalendar()[1]).zfill(2)
 
     if not results:
         filtro = f" de *{producto}*" if producto else ""
+        if zona:
+            return (
+                f"Sin stock{filtro} en *{cliente.upper()} {tienda.upper()}* "
+                f"dentro de tu zona ({zona}) (Sem {semana})."
+            )
         return (
             f"Sin stock{filtro} en *{cliente.upper()} {tienda.upper()}* (Sem {semana}).\n"
             f"Verifica el nombre de la tienda."
         )
 
     header = f"\U0001f4e6 *{cliente.upper()} \u2014 {tienda.upper()}* (Sem {semana})\n"
+    if zona:
+        header += f"Zona: {zona}\n"
     header += f"_{len(results)} producto(s)_"
     if producto:
         header += f" \u00b7 _{producto}_"
@@ -262,14 +292,17 @@ def is_sku_plus_cliente(msg: str) -> tuple[str, str] | None:
     return sku, cliente
 
 
-def consultar_por_sku(sku: str, cliente: str | None = None) -> dict:
+def consultar_por_sku(sku: str, cliente: str | None = None, zona: str | None = None) -> dict:
     """Busca un SKU en TODO el Excel (o filtrado por cliente si se pasa).
+    Si zona se pasa, restringe a filas cuya columna "Zona" coincida.
     Devuelve {descripcion, marca, cliente_filtro, filas: [...]} donde cada
-    fila es {cliente, sala, stock, venta}. Ordenado por stock desc."""
+    fila es {cliente, sala, stock, venta, sku_cliente}. Ordenado por stock desc."""
     df = get_dataframe()
     mask = df["Sku Mattel"].astype(str).str.upper().str.strip() == sku.upper().strip()
     if cliente:
         mask &= df["Cliente"].astype(str).str.lower().str.strip() == cliente.lower().strip()
+    if zona and "Zona" in df.columns:
+        mask &= df["Zona"].astype(str).str.strip().str.lower() == zona.lower().strip()
     matched = df[mask]
     if len(matched) == 0:
         return {"descripcion": "", "marca": "", "cliente_filtro": cliente or "", "filas": []}
@@ -302,13 +335,15 @@ def consultar_por_sku(sku: str, cliente: str | None = None) -> dict:
     return {"descripcion": descripcion, "marca": marca, "cliente_filtro": cliente or "", "filas": filas}
 
 
-def format_respuesta_sku(sku: str, data: dict) -> str:
+def format_respuesta_sku(sku: str, data: dict, zona: str | None = None) -> str:
     semana = str(date.today().isocalendar()[1]).zfill(2)
     filas = data.get("filas", [])
     cliente_filtro = data.get("cliente_filtro", "")
 
     if not filas:
         filtro_txt = f" en *{cliente_filtro.upper()}*" if cliente_filtro else ""
+        if zona:
+            return f"Sin stock de *{sku}*{filtro_txt} en tu zona ({zona}) (Sem {semana})."
         return f"SKU *{sku}* no encontrado{filtro_txt} (Sem {semana})."
 
     desc = data.get("descripcion", "")
@@ -318,6 +353,8 @@ def format_respuesta_sku(sku: str, data: dict) -> str:
 
     scope = f" — {cliente_filtro.upper()}" if cliente_filtro else ""
     header = f"\U0001f4e6 SKU *{sku}*{scope} (Sem {semana})\n"
+    if zona:
+        header += f"Zona: {zona}\n"
     if desc:
         header += f"{desc[:60]}\n"
     if marca:
@@ -617,6 +654,8 @@ def whatsapp():
     if sender not in NUMEROS_AUTORIZADOS:
         return twiml(resp)
 
+    zona = get_zona_for_sender(sender)  # None = admin (sin filtro)
+
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
         return twiml(resp)
@@ -626,24 +665,24 @@ def whatsapp():
     if sku_cli:
         sku, cliente = sku_cli
         try:
-            data = consultar_por_sku(sku, cliente=cliente)
+            data = consultar_por_sku(sku, cliente=cliente, zona=zona)
         except Exception as e:
             log.error("Error consultando por SKU+cliente: %s", e)
             resp.message("Error leyendo el archivo. Intenta de nuevo.")
             return twiml(resp)
-        resp.message(format_respuesta_sku(sku, data))
+        resp.message(format_respuesta_sku(sku, data, zona=zona))
         return twiml(resp)
 
     # Modo "solo SKU": consulta a nivel Chile por Sku Mattel
     sku_solo = is_sku_only(incoming)
     if sku_solo:
         try:
-            data = consultar_por_sku(sku_solo)
+            data = consultar_por_sku(sku_solo, zona=zona)
         except Exception as e:
             log.error("Error consultando por SKU: %s", e)
             resp.message("Error leyendo el archivo. Intenta de nuevo.")
             return twiml(resp)
-        resp.message(format_respuesta_sku(sku_solo, data))
+        resp.message(format_respuesta_sku(sku_solo, data, zona=zona))
         return twiml(resp)
 
     parsed = parse_query(incoming)
@@ -660,13 +699,13 @@ def whatsapp():
         producto = None
 
     try:
-        results = consultar_stock(cliente, tienda, producto)
+        results = consultar_stock(cliente, tienda, producto, zona=zona)
     except Exception as e:
         log.error("Error consultando stock: %s", e)
         resp.message("Error leyendo el archivo. Intenta de nuevo.")
         return twiml(resp)
 
-    resp.message(format_respuesta(cliente, tienda, producto, results))
+    resp.message(format_respuesta(cliente, tienda, producto, results, zona=zona))
     return twiml(resp)
 
 
@@ -674,41 +713,47 @@ def whatsapp():
 def test():
     """Endpoint para probar sin WhatsApp. Ej: /test?msg=Ripley+Los+Dominicos"""
     msg = request.args.get("msg", "Ripley Los Dominicos")
+    # Sender opcional para simular permisos por zona en las pruebas.
+    # Ej: /test?msg=HDX82&sender=whatsapp:+56997054149
+    sender = request.args.get("sender", "")
+    zona = get_zona_for_sender(sender) if sender else None
 
     # Modo "SKU + cliente"
     sku_cli = is_sku_plus_cliente(msg)
     if sku_cli:
         sku, cliente = sku_cli
         try:
-            data = consultar_por_sku(sku, cliente=cliente)
+            data = consultar_por_sku(sku, cliente=cliente, zona=zona)
         except Exception as e:
             return {"error": str(e)}
         return {
             "modo": "sku+cliente",
             "sku": sku,
             "cliente": cliente,
+            "zona": zona,
             "descripcion": data.get("descripcion", ""),
             "marca": data.get("marca", ""),
             "salas": len(data.get("filas", [])),
             "muestra": data.get("filas", [])[:5],
-            "respuesta": format_respuesta_sku(sku, data),
+            "respuesta": format_respuesta_sku(sku, data, zona=zona),
         }
 
     # Modo "solo SKU"
     sku_solo = is_sku_only(msg)
     if sku_solo:
         try:
-            data = consultar_por_sku(sku_solo)
+            data = consultar_por_sku(sku_solo, zona=zona)
         except Exception as e:
             return {"error": str(e)}
         return {
             "modo": "sku",
             "sku": sku_solo,
+            "zona": zona,
             "descripcion": data.get("descripcion", ""),
             "marca": data.get("marca", ""),
             "salas": len(data.get("filas", [])),
             "muestra": data.get("filas", [])[:5],
-            "respuesta": format_respuesta_sku(sku_solo, data),
+            "respuesta": format_respuesta_sku(sku_solo, data, zona=zona),
         }
 
     parsed = parse_query(msg)
@@ -722,16 +767,17 @@ def test():
         producto = None
 
     try:
-        results = consultar_stock(cliente, tienda, producto)
+        results = consultar_stock(cliente, tienda, producto, zona=zona)
     except Exception as e:
         return {"error": str(e)}
 
     return {
         "parsed": parsed,
         "producto_final": producto,
+        "zona": zona,
         "resultados": len(results),
         "muestra": results[:5],
-        "respuesta": format_respuesta(cliente, tienda, producto, results),
+        "respuesta": format_respuesta(cliente, tienda, producto, results, zona=zona),
     }
 
 
