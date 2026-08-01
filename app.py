@@ -409,6 +409,128 @@ def format_respuesta_sku(sku: str, data: dict, zona: str | None = None) -> str:
     return "\n".join(lineas)
 
 
+# ── Modo "bajos": productos sin venta con mas stock ────────────────────────────
+
+BAJOS_KEYWORDS = ("critico", "crítico", "criticos", "críticos")
+BAJOS_TOP_N = 15
+BAJOS_STOCK_MIN = 5
+
+
+def is_bajos_query(msg: str) -> str | None:
+    """Si el mensaje empieza con una keyword de 'bajos', devuelve el resto
+    del mensaje (que deberia ser cliente + tienda). Si no, devuelve None."""
+    if not msg:
+        return None
+    lower = msg.lower().strip()
+    for kw in BAJOS_KEYWORDS:
+        if lower == kw or lower.startswith(kw + " "):
+            resto = msg.strip()[len(kw):].strip()
+            return resto
+    return None
+
+
+def consultar_bajos(cliente: str, tienda: str, zona: str | None = None,
+                    top_n: int = BAJOS_TOP_N, stock_min: int = BAJOS_STOCK_MIN) -> list:
+    """Devuelve productos con Venta=0 y Stock>=stock_min en la sala indicada,
+    ordenados por stock desc, limitados a top_n."""
+    df = get_dataframe()
+
+    if zona and "Zona" in df.columns:
+        df = df[df["Zona"].astype(str).str.strip().str.lower() == zona.lower().strip()]
+
+    mask_c = df["Cliente"].str.lower() == cliente.lower()
+
+    tienda_low = tienda.lower().strip()
+    nombres = df["Nombre Tienda"].str.lower()
+
+    # Reuso los mismos 3 niveles de matching que consultar_stock
+    mask_t = nombres.str.contains(tienda_low, na=False, regex=False)
+    if not (mask_c & mask_t).any():
+        words = [w for w in tienda_low.split() if len(w) > 2]
+        if words:
+            mask_t = pd.Series([True] * len(df), index=df.index)
+            for w in words:
+                mask_t &= nombres.str.contains(w, na=False, regex=False)
+    if not (mask_c & mask_t).any():
+        mask_t = pd.Series([False] * len(df), index=df.index)
+        for w in tienda_low.split():
+            if len(w) > 2:
+                mask_t |= nombres.str.contains(w, na=False, regex=False)
+
+    filtered = df[mask_c & mask_t]
+    if len(filtered) == 0:
+        return []
+
+    if "Venta" not in filtered.columns:
+        # sin columna Venta no podemos calcular bajos
+        return []
+
+    # Normalizar Venta y Stock a numeros
+    venta_num = pd.to_numeric(filtered["Venta"], errors="coerce").fillna(0)
+    stock_num = pd.to_numeric(filtered["Stock"], errors="coerce").fillna(0)
+    mask_bajos = (venta_num == 0) & (stock_num >= stock_min)
+    filtered = filtered[mask_bajos]
+
+    results = []
+    for _, row in filtered.iterrows():
+        try:
+            stock = int(row["Stock"]) if pd.notna(row["Stock"]) else 0
+        except (ValueError, TypeError):
+            stock = 0
+        sku_cliente = str(row.get("Sku Cliente", "")).strip() if "Sku Cliente" in row.index else ""
+        if sku_cliente.lower() == "nan":
+            sku_cliente = ""
+        results.append({
+            "sku_mattel": str(row.get("Sku Mattel", "")).strip(),
+            "sku_cliente": sku_cliente,
+            "descripcion": str(row.get("Descripcion producto", ""))[:60].strip(),
+            "stock": stock,
+        })
+
+    results.sort(key=lambda x: x["stock"], reverse=True)
+    return results[:top_n]
+
+
+def format_respuesta_bajos(cliente: str, tienda: str, results: list,
+                           zona: str | None = None) -> str:
+    semana = str(date.today().isocalendar()[1]).zfill(2)
+
+    if not results:
+        zona_txt = f" en tu zona ({zona})" if zona else ""
+        return (
+            f"✅ Sin productos con stock parado en *{cliente.upper()} {tienda.upper()}*"
+            f"{zona_txt} (Sem {semana}).\n"
+            f"(Filtro: Venta=0 y Stock>={BAJOS_STOCK_MIN})"
+        )
+
+    header = f"\U0001f6a8 *BAJO RENDIMIENTO — {cliente.upper()} {tienda.upper()}* (Sem {semana})\n"
+    if zona:
+        header += f"Zona: {zona}\n"
+    header += f"_{len(results)} producto(s) sin venta con más stock_\n"
+
+    CHAR_BUDGET = 1500
+    body_lines = []
+    chars_used = len(header)
+    shown = 0
+    for r in results:
+        cod = r.get("sku_cliente", "").strip()
+        cod_txt = f" · Cod: {cod}" if cod else ""
+        l1 = f"⚠️ {r['descripcion']}"
+        l2 = f"   SKU: {r['sku_mattel']}{cod_txt} · Stock: {r['stock']}"
+        extra = len(l1) + len(l2) + 2
+        if chars_used + extra > CHAR_BUDGET:
+            break
+        body_lines.append(l1)
+        body_lines.append(l2)
+        chars_used += extra
+        shown += 1
+
+    lineas = [header] + body_lines
+    if shown < len(results):
+        lineas.append(f"\n_...y {len(results)-shown} más._")
+    return "\n".join(lineas)
+
+
 # ── Parser con Claude ──────────────────────────────────────────────────────────
 
 def get_system_parse() -> str:
@@ -634,7 +756,8 @@ HELP_MSG = (
     "- _Falabella Parque Arauco_\n"
     "- _Barbie Ripley Costanera_\n"
     "- _HDX82_ (solo el SKU → info a nivel Chile)\n"
-    "- _HDX82 Walmart_ (SKU en una cadena)\n\n"
+    "- _HDX82 Walmart_ (SKU en una cadena)\n"
+    "- _critico Jumbo Vitacura_ (top productos sin venta con más stock)\n\n"
     "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
 )
 
@@ -658,6 +781,23 @@ def whatsapp():
 
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
+        return twiml(resp)
+
+    # Modo "bajos": productos sin venta con mas stock en una sala
+    resto_bajos = is_bajos_query(incoming)
+    if resto_bajos is not None:
+        parsed_b = parse_simple(resto_bajos)
+        if "error" in parsed_b or not parsed_b.get("tienda"):
+            resp.message("Uso: *critico <cliente> <tienda>*\nEj: critico jumbo vitacura")
+            return twiml(resp)
+        try:
+            results = consultar_bajos(parsed_b["cliente"], parsed_b["tienda"], zona=zona)
+        except Exception as e:
+            log.error("Error consultando bajos: %s", e)
+            resp.message("Error leyendo el archivo. Intenta de nuevo.")
+            return twiml(resp)
+        resp.message(format_respuesta_bajos(
+            parsed_b["cliente"], parsed_b["tienda"], results, zona=zona))
         return twiml(resp)
 
     # Modo "SKU + cliente": consulta un SKU filtrado por una cadena
@@ -717,6 +857,27 @@ def test():
     # Ej: /test?msg=HDX82&sender=whatsapp:+56997054149
     sender = request.args.get("sender", "")
     zona = get_zona_for_sender(sender) if sender else None
+
+    # Modo "bajos"
+    resto_bajos = is_bajos_query(msg)
+    if resto_bajos is not None:
+        parsed_b = parse_simple(resto_bajos)
+        if "error" in parsed_b or not parsed_b.get("tienda"):
+            return {"error": "Uso: bajos <cliente> <tienda>", "msg": msg}
+        try:
+            results = consultar_bajos(parsed_b["cliente"], parsed_b["tienda"], zona=zona)
+        except Exception as e:
+            return {"error": str(e)}
+        return {
+            "modo": "bajos",
+            "cliente": parsed_b["cliente"],
+            "tienda": parsed_b["tienda"],
+            "zona": zona,
+            "resultados": len(results),
+            "muestra": results[:5],
+            "respuesta": format_respuesta_bajos(
+                parsed_b["cliente"], parsed_b["tienda"], results, zona=zona),
+        }
 
     # Modo "SKU + cliente"
     sku_cli = is_sku_plus_cliente(msg)
