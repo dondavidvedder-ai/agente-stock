@@ -231,14 +231,45 @@ def is_sku_only(msg: str) -> str | None:
     return sku
 
 
-def consultar_por_sku(sku: str) -> dict:
-    """Busca un SKU en TODO el Excel. Devuelve {descripcion, marca, filas: [...]}
-    donde cada fila es {cliente, sala, stock, venta}. Ordenado por stock desc."""
+def is_sku_plus_cliente(msg: str) -> tuple[str, str] | None:
+    """Si el mensaje es SKU + exactamente un cliente (sin tienda), devuelve
+    (sku, cliente). Si no, devuelve None."""
+    if not msg:
+        return None
+    lower = msg.lower().strip()
+    # Detectar exactamente un cliente
+    clientes_encontrados = [c for c in CLIENTES_VALIDOS if re.search(rf'\b{re.escape(c)}\b', lower)]
+    if len(clientes_encontrados) != 1:
+        return None
+    cliente = clientes_encontrados[0]
+    lower_sin_cliente = re.sub(rf'\b{re.escape(cliente)}\b', ' ', lower)
+    lower_sin_cliente = " ".join(lower_sin_cliente.split())
+    # Buscar SKU
+    sku_match = SKU_RE.search(lower_sin_cliente)
+    if not sku_match:
+        return None
+    sku = sku_match.group(1).upper()
+    # Lo que sobra tiene que ser solo palabras permitidas
+    resto = (lower_sin_cliente[:sku_match.start()] + " " + lower_sin_cliente[sku_match.end():]).strip()
+    resto_palabras = [w for w in resto.split() if w]
+    permitidas = PALABRAS_IGNORAR | PALABRAS_SKU_CONTEXTO
+    for w in resto_palabras:
+        if w not in permitidas:
+            return None
+    return sku, cliente
+
+
+def consultar_por_sku(sku: str, cliente: str | None = None) -> dict:
+    """Busca un SKU en TODO el Excel (o filtrado por cliente si se pasa).
+    Devuelve {descripcion, marca, cliente_filtro, filas: [...]} donde cada
+    fila es {cliente, sala, stock, venta}. Ordenado por stock desc."""
     df = get_dataframe()
     mask = df["Sku Mattel"].astype(str).str.upper().str.strip() == sku.upper().strip()
+    if cliente:
+        mask &= df["Cliente"].astype(str).str.lower().str.strip() == cliente.lower().strip()
     matched = df[mask]
     if len(matched) == 0:
-        return {"descripcion": "", "marca": "", "filas": []}
+        return {"descripcion": "", "marca": "", "cliente_filtro": cliente or "", "filas": []}
 
     descripcion = str(matched.iloc[0].get("Descripcion producto", "")).strip()
     marca = str(matched.iloc[0].get("Marca", "")).strip()
@@ -261,22 +292,25 @@ def consultar_por_sku(sku: str) -> dict:
         })
 
     filas.sort(key=lambda x: x["stock"], reverse=True)
-    return {"descripcion": descripcion, "marca": marca, "filas": filas}
+    return {"descripcion": descripcion, "marca": marca, "cliente_filtro": cliente or "", "filas": filas}
 
 
 def format_respuesta_sku(sku: str, data: dict) -> str:
     semana = str(date.today().isocalendar()[1]).zfill(2)
     filas = data.get("filas", [])
+    cliente_filtro = data.get("cliente_filtro", "")
 
     if not filas:
-        return f"SKU *{sku}* no encontrado en el Excel (Sem {semana})."
+        filtro_txt = f" en *{cliente_filtro.upper()}*" if cliente_filtro else ""
+        return f"SKU *{sku}* no encontrado{filtro_txt} (Sem {semana})."
 
     desc = data.get("descripcion", "")
     marca = data.get("marca", "")
     stock_total = sum(f["stock"] for f in filas)
     venta_total = sum(f["venta"] for f in filas)
 
-    header = f"\U0001f4e6 SKU *{sku}* (Sem {semana})\n"
+    scope = f" — {cliente_filtro.upper()}" if cliente_filtro else ""
+    header = f"\U0001f4e6 SKU *{sku}*{scope} (Sem {semana})\n"
     if desc:
         header += f"{desc[:60]}\n"
     if marca:
@@ -553,7 +587,8 @@ HELP_MSG = (
     "- _Ripley Los Dominicos_\n"
     "- _Falabella Parque Arauco_\n"
     "- _Barbie Ripley Costanera_\n"
-    "- _HDX82_ (solo el SKU → info a nivel Chile)\n\n"
+    "- _HDX82_ (solo el SKU → info a nivel Chile)\n"
+    "- _HDX82 Walmart_ (SKU en una cadena)\n\n"
     "Clientes: Falabella, Ripley, Jumbo, Tottus, Walmart"
 )
 
@@ -575,6 +610,19 @@ def whatsapp():
 
     if incoming.lower() in ("hola", "help", "ayuda", "?", ""):
         resp.message(HELP_MSG)
+        return twiml(resp)
+
+    # Modo "SKU + cliente": consulta un SKU filtrado por una cadena
+    sku_cli = is_sku_plus_cliente(incoming)
+    if sku_cli:
+        sku, cliente = sku_cli
+        try:
+            data = consultar_por_sku(sku, cliente=cliente)
+        except Exception as e:
+            log.error("Error consultando por SKU+cliente: %s", e)
+            resp.message("Error leyendo el archivo. Intenta de nuevo.")
+            return twiml(resp)
+        resp.message(format_respuesta_sku(sku, data))
         return twiml(resp)
 
     # Modo "solo SKU": consulta a nivel Chile por Sku Mattel
@@ -617,6 +665,25 @@ def whatsapp():
 def test():
     """Endpoint para probar sin WhatsApp. Ej: /test?msg=Ripley+Los+Dominicos"""
     msg = request.args.get("msg", "Ripley Los Dominicos")
+
+    # Modo "SKU + cliente"
+    sku_cli = is_sku_plus_cliente(msg)
+    if sku_cli:
+        sku, cliente = sku_cli
+        try:
+            data = consultar_por_sku(sku, cliente=cliente)
+        except Exception as e:
+            return {"error": str(e)}
+        return {
+            "modo": "sku+cliente",
+            "sku": sku,
+            "cliente": cliente,
+            "descripcion": data.get("descripcion", ""),
+            "marca": data.get("marca", ""),
+            "salas": len(data.get("filas", [])),
+            "muestra": data.get("filas", [])[:5],
+            "respuesta": format_respuesta_sku(sku, data),
+        }
 
     # Modo "solo SKU"
     sku_solo = is_sku_only(msg)
@@ -723,4 +790,3 @@ def debug():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
