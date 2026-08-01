@@ -145,6 +145,7 @@ def consultar_stock(cliente: str, tienda: str, producto: str | None) -> list:
             venta = 0
         results.append({
             "sku_mattel": str(row.get("Sku Mattel", "")),
+            "sku_cliente": str(row.get("Sku Cliente", "")) if "Sku Cliente" in row.index else "",
             "descripcion": str(row.get("Descripcion producto", ""))[:60],
             "actividad": str(row.get("Actividad", "")) if "Actividad" in row.index else "",
             "stock": stock,
@@ -187,7 +188,9 @@ def format_respuesta(cliente, tienda, producto, results) -> str:
         estado = "\u2705" if r["stock"] > 0 else "\u26a0\ufe0f"
         desc = r['descripcion'].strip()
         l1 = f"{estado} {desc}"
-        l2 = f"   SKU: {r['sku_mattel'].strip()} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}"
+        cod = r.get('sku_cliente', '').strip()
+        cod_txt = f" \u00b7 Cod: {cod}" if cod and cod.lower() != 'nan' else ""
+        l2 = f"   SKU: {r['sku_mattel'].strip()}{cod_txt} \u00b7 Stock: {r['stock']} \u00b7 Venta: {r['venta']}"
         extra = len(l1) + len(l2) + 2  # +2 por los \n
         if chars_used + extra > CHAR_BUDGET:
             break
@@ -284,9 +287,13 @@ def consultar_por_sku(sku: str, cliente: str | None = None) -> dict:
             venta = int(row["Venta"]) if "Venta" in row.index and pd.notna(row["Venta"]) else 0
         except (ValueError, TypeError):
             venta = 0
+        sku_cliente = str(row.get("Sku Cliente", "")).strip() if "Sku Cliente" in row.index else ""
+        if sku_cliente.lower() == "nan":
+            sku_cliente = ""
         filas.append({
             "cliente": str(row.get("Cliente", "")).strip(),
             "sala": str(row.get("Nombre Tienda", "")).strip(),
+            "sku_cliente": sku_cliente,
             "stock": stock,
             "venta": venta,
         })
@@ -340,7 +347,9 @@ def format_respuesta_sku(sku: str, data: dict) -> str:
             break
         subtotal_stock = sum(x["stock"] for x in lista)
         subtotal_venta = sum(x["venta"] for x in lista)
-        h = f"\n*{cliente.upper()}* (Stock {subtotal_stock} · Venta {subtotal_venta})"
+        cods_unicos = sorted({x.get("sku_cliente", "") for x in lista if x.get("sku_cliente")})
+        cod_txt = f"Cod: {', '.join(cods_unicos)} · " if cods_unicos else ""
+        h = f"\n*{cliente.upper()}* ({cod_txt}Stock {subtotal_stock} · Venta {subtotal_venta})"
         if chars_used + len(h) + 1 > CHAR_BUDGET:
             truncado = True
             break
